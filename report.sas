@@ -1,5 +1,5 @@
-/* One report macro to rule them all!
 /* Author: Zhen-Huan (Kenny) Hu <zhu@mcw.edu>
+/*				 Hai-Lin Wang <hwang@mcw.edu>
 /* Last change: 2020-12-08
 /*
 /* Fucntions and their basic uses:
@@ -596,7 +596,7 @@
   total = 0,    /* 1 - Show total column; 0 - No total column */
   label = 'No. of patients',
   rowpct = 0,   /* Display row percentage */
-  format = 4.1, /* Format of the numbers */
+  format = 4., /* Format of the numbers */
   note =        /* Additional footnote */
   );
 
@@ -742,92 +742,6 @@
   %rptpush(nlevel_bystrata);
 %mend;
 
-%macro nlevelsubgrp(
-  indata,       /* Input dataset */
-  var,          /* Variable */
-  subgrp,       /* Sub-group */
-  strata,       /* Main group */
-  total = 0,    /* 1 - Show total column; 0 - No total column */
-  label = 'No. of levels',
-  missingtag = 'Missing',
-  note =        /* Additional footnote */
-  );
-
-  %* Precheck the STRATA variable;
-  %if &rpt_sttvar = %then %do;
-    %let rpt_sttvar = &strata;
-    %let dsid = %sysfunc(open(&indata, i));
-    %let sttnum = %sysfunc(varnum(&dsid, &rpt_sttvar));
-    %let rpt_sttlbl = %qsysfunc(varlabel(&dsid, &sttnum));
-    %let rc = %sysfunc(close(&dsid));
-  %end;
-  %else %if &rpt_sttvar ne &strata %then %do;
-    %put ERROR: Changed main group variable;
-    %abort;
-  %end;
-
-  data init;
-    set &indata(keep = &strata &subgrp &var);
-    where not missing(&strata) and not missing(&var);
-  run;
-
-  proc sql noprint;
-    create table header as select distinct &strata from init;
-    create table nlevel as
-    select h.&strata, s.&subgrp, coalesce(nlevel, 0) as nlevel
-    from header h cross join (select distinct &subgrp from init) s
-    left join (select &strata, &subgrp, count(distinct &var) as nlevel from init group by &strata, &subgrp) c
-    on h.&strata = c.&strata and s.&subgrp = c.&subgrp;
-    create table total_nlevel as select &subgrp, count(distinct &var) as nlevel from init group by &subgrp;
-  quit;
-
-  data nlevel_result;
-    %if not &total %then set header(in = in_header) nlevel;
-    %else set header(in = in_header) nlevel total_nlevel(in = in_total);;
-    length col_id result $ 50 col_idlabel varstr $ 250;
-    if in_header then do;
-      rwtype = 0;
-      varstr = &label;
-    end;
-    else do;
-      rwtype = 1;
-      if missing(&subgrp) and strip(vvalue(&subgrp)) in ('', '.') then varstr = &missingtag;
-      else varstr = vvalue(&subgrp);
-      result = cat(nlevel);
-    end;
-    if in_total then do;
-      col_id = 'rpt_col_total';
-      col_idlabel = 'Total';
-    end;
-    else do;
-      col_id = cats('rpt_col', &strata);
-      col_idlabel = strip(vvalue(&strata));
-    end;
-  run;
-  proc sort data = nlevel_result;
-    by rwtype &subgrp varstr;
-  proc transpose data = nlevel_result out = nlevel_bystrata(drop = _name_);
-    by rwtype &subgrp varstr;
-    id col_id;
-    idlabel col_idlabel;
-    var result;
-  run;
-
-  %if &note ~= %then %do;
-    proc sql noprint;
-      alter table nlevel_bystrata add rpt_col_note varchar(500);
-      update nlevel_bystrata set rpt_col_note = &note where rwtype = 0;
-    quit;
-  %end;
-
-  proc sql noprint;
-    create table nlevel_sorted(drop = &subgrp) as
-    select * from nlevel_bystrata order by rwtype, missing(&subgrp), &subgrp;
-  quit;
-
-  %rptpush(nlevel_sorted);
-%mend;
-
 %macro cntcenter(
   indata,       /* Input dataset */
   cid,          /* Center ID */
@@ -872,7 +786,7 @@
   orderbytotal = 0, /* Order the rows by total counts */
   orderby = ,       /* Order the rows by specified values */
   tail = 1,         /* Append descriptive text to the label */
-  format = 4.1      /* Format of the numbers */
+  format = 4.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -892,8 +806,8 @@
   %else %let pctvar = pct_row;
   %if &missing %then %let missopt = missing;
   %else %let missopt = missprint;
-  %if &tail and &nopct %then %let vtail = 'no.';
-  %else %if &tail %then %let vtail = 'no. (%)';
+  %if &tail and &nopct %then %let vtail = 'n';
+  %else %if &tail %then %let vtail = 'n (%)';
   %else %let vtail = '';
 
   data init;
@@ -921,7 +835,7 @@
       length col_id result $ 50 col_idlabel varstr $ 250;
       if in_header then do;
         rwtype = 0;
-        varstr = catx(' - ', vlabel(&var), &vtail);
+        varstr = catx(', ', vlabel(&var), &vtail);
         %if &coln %then result = cat('N = ', count);;
       end;
       else do;
@@ -1030,6 +944,277 @@
   %end;
 %mend;
 
+%macro freqbypt(
+  indata,           /* Input dataset */
+  inptdata,					/* HW: Input patint level data set */
+  pid,							/* HW: Patient ID (used for nodupkey) */
+  varlst,           /* Variables to be analyzed */
+  strata,           /* Main group */
+  coln = 0,         /* 1 - Column total in header */
+  colpct = 1,       /* 1 - Column percentages; 0 - Row percentages */
+  nopct = 0,        /* 1 - No percentage; 0 - Show percentages */
+  test = 0,         /* 1 - Pearsons chi-square test; 2 - Fishers exact test */
+  total = 0,        /* 1 - Show total column; 0 - No total column */
+  note = ,          /* Additional footnote */
+  missing = 1,      /* 1 - Include missing in computations of percentages and statistics */
+  missingtag = 'Missing',
+  orderbytotal = 0, /* Order the rows by total counts */
+  orderby = ,       /* Order the rows by specified values */
+  tail = 1,         /* Append descriptive text to the label */
+  format = 4.,      /* Format of the numbers */
+  gendersp = 0,			/* HW: Gender specific percentage (for AE) */
+  sortref = 				/* HW: value of column variable to sort descendingly */
+  );
+
+  %* Precheck the STRATA variable;
+  %if &rpt_sttvar = %then %do;
+    %let rpt_sttvar = &strata;
+    %let dsid = %sysfunc(open(&indata, i));
+    %let sttnum = %sysfunc(varnum(&dsid, &rpt_sttvar));
+    %let rpt_sttlbl = %qsysfunc(varlabel(&dsid, &sttnum));
+    %let rc = %sysfunc(close(&dsid));
+  %end;
+  %else %if &rpt_sttvar ne &strata %then %do;
+    %put ERROR: Changed main group variable;
+    %abort;
+  %end;
+
+  %if &colpct %then %let pctvar = pct_col;
+  %else %let pctvar = pct_row;
+  %if &missing %then %let missopt = missing;
+  %else %let missopt = missprint;
+  %if &tail and &nopct %then %let vtail = 'n';
+  %else %if &tail %then %let vtail = 'n (%)';
+  %else %let vtail = '';
+
+  data init;
+    set &indata(keep = &pid &varlst &strata);
+    where not missing(&strata);
+  run;
+
+	/*2021-08-06 HW*/
+			proc sort data=init nodupkey;
+				by &pid &strata &varlst;
+			run;
+
+			data init_pt;
+				set &inptdata(keep = &pid &strata sex);
+			  where not missing(&strata);
+		  run;
+
+  proc means data = init noprint;
+    class &strata;
+    var &strata;
+    output out = header n = count;
+  run;
+
+	/*2021-08-06 HW*/
+		  proc freq data = init_pt noprint;
+		    table &strata / sparse &missopt out = stratabypt;
+		    format _all_; 
+		  run;
+		
+		  proc freq data = init_pt noprint;
+		  	where sex="M";
+		    table &strata / sparse &missopt out = stratabypt_male;
+		    format _all_; 
+		  run;
+		  
+		  proc freq data = init_pt noprint;
+		  	where sex="F";
+		    table &strata / sparse &missopt out = stratabypt_female;
+		    format _all_; 
+		  run;
+  
+
+  %let nvarlst = %sysfunc(countw(&varlst));
+  %do i = 1 %to &nvarlst;
+    %let var = %scan(&varlst, &i);
+    proc freq data = init noprint;
+      table &var * &strata / sparse &missopt outpct out = freqtab&i._o(drop = percent); %* By STRATA;
+      table &var / &missopt out = total_freqtab&i; %* Overall;
+    run;
+
+		/*2021-08-06 HW*/
+					proc sql; 
+					create table freqtab&i as 
+					select a.*, 
+								 100*a.count/b.count as percent,
+								 100*a.count/m.count as percent_male,
+								 100*a.count/f.count as percent_female
+					from freqtab&i._o as a 
+					left join stratabypt as b on a.&strata=b.&strata
+					left join stratabypt_male as m on a.&strata=m.&strata
+					left join stratabypt_female as f on a.&strata=f.&strata;
+					quit;
+
+    data freqtab_result&i;
+      %if not &total %then set header(where = (_type_ = 1) in = in_header) freqtab&i;
+      %else set header(in = in_header) freqtab&i total_freqtab&i(in = in_total);;
+      length col_id result $ 50 col_idlabel varstr $ 250;
+      
+      /*2021-08-03 HW: add gender specific percentage*/
+		      %if &gendersp %then %do;
+		      	if prxmatch('/\[m\]/i',vvalue(&var)) then percent = percent_male;
+		      	if prxmatch('/\[f\]/i',vvalue(&var)) then percent = percent_female;
+		      %end;
+      
+      if in_header then do;
+        rwtype = 0;
+        varstr = catx(', ', vlabel(&var), &vtail);
+        %if &coln %then result = cat('N = ', count);;
+      end;
+      else do;
+        rwtype = 1;
+        if missing(&var) and strip(vvalue(&var)) in ('', '.') then varstr = &missingtag;
+        else varstr = vvalue(&var);
+        %if &nopct %then %do;
+          result = cat(count);
+        %end;
+        %else %do;
+          if 0 <= percent <= 100 then result = cat(count, ' (', strip(put(percent, &format)), ')');
+          else result = cat(count);
+        %end;
+      end;
+      if (in_header and _type_ = 0) or in_total then do;
+        col_id = 'rpt_col_total';
+        col_idlabel = 'Total';
+      end;
+      else do;
+        col_id = cats('rpt_col', &strata);
+        col_idlabel = strip(vvalue(&strata));
+      end;
+    run;
+
+    /*2021-08-06 HW: add sort by count (not percent) in specific column*/
+    %if &sortref ~= %then %do;
+    	%let nsortvarlst = %sysfunc(countw(&sortref));
+    	%let sortval_agg = ;
+  		%do s = 1 %to &nsortvarlst;
+	    		%let sortval = %scan(&sortref, &s);
+	    		%let sortval_agg = &sortval_agg count_ref&sortval;
+			    data freqtab_result&i._ref&sortval;
+			    	set freqtab_result&i;
+			    	if col_id = cats('rpt_col', &sortval);
+			    	keep rwtype &var varstr count;
+			    	rename count = count_ref&sortval;
+			    run;
+			    
+			 		proc sort data = freqtab_result&i;
+			      by rwtype &var varstr;
+			 		proc sort data = freqtab_result&i._ref&sortval;
+			      by rwtype &var varstr;
+			      
+			    data freqtab_result&i;
+			    	merge freqtab_result&i freqtab_result&i._ref&sortval;
+			    	by rwtype &var varstr;
+			    run;
+			%end;
+			
+	    proc sort data = freqtab_result&i;
+	      by rwtype &sortval_agg &var varstr;
+	    run;
+    %end;
+    
+    %else %do;
+    proc sort data = freqtab_result&i;
+      by rwtype &var varstr;
+    %end;  
+    
+    proc transpose data = freqtab_result&i out = freqtab_bystrata&i(drop = _name_);
+      by rwtype %if &sortref ~= %then &sortval_agg; &var varstr;
+      id col_id;
+      idlabel col_idlabel;
+      var result;
+    run;
+
+    %* Chi-square p-value;
+    %if &test >= 1 %then %do;
+      %if &test = 1 %then %let testtype = chisq;
+      %else %if &test = 2 %then %do;
+        ods exclude all;
+        proc freq data = init nlevels;
+          table &strata &var / noprint;
+          ods output NLevels = freqtab_nlevels&i;
+        run;
+        ods exclude none;
+        proc sql noprint;
+          select nlevels, nnonmisslevels
+          into :varlevels1 thru :varlevels2, :varnonmisslevels1 thru :varnonmisslevels2 from freqtab_nlevels&i;
+        quit;
+        %if &missing %then %do;
+          %if &varlevels1 > 2 or &varlevels2 > 2 %then %let testtype = exactmc;
+          %else %let testtype = exact;
+        %end;
+        %else %do;
+          %if &varnonmisslevels1 > 2 or &varnonmisslevels2 > 2 %then %let testtype = exactmc;
+          %else %let testtype = exact;
+        %end;
+      %end;
+      %rpttest(init, &var, &strata, type = &testtype, testopt = &missopt);
+      proc sql noprint;
+        alter table freqtab_bystrata&i add rpt_col_pval varchar(20), plabel varchar(25);
+        update freqtab_bystrata&i set rpt_col_pval = (select put(pvalue, pvalue4.2) from rpt_outtest),
+        plabel = (select plabel from rpt_outtest) where rwtype = 0;
+      quit;
+    %end;
+
+    %if &note ~= %then %do;
+      proc sql noprint;
+        alter table freqtab_bystrata&i add rpt_col_note varchar(500);
+        update freqtab_bystrata&i set rpt_col_note = &note where rwtype = 0;
+      quit;
+    %end;
+
+    %if &orderbytotal or &orderby ~= %then %do;
+      %if &orderbytotal %then %do;
+        data freqorderby&i;
+          set total_freqtab&i;
+          orderby = 100 - percent;
+          keep &var orderby;
+        run;
+      %end;
+      %else %if &orderby ~= %then %do;
+        proc iml;
+          vval = t({&orderby});
+          nval = nrow(vval);
+          vseq = t(do(1, nval, 1));
+          outdata = vval || vseq;
+          create freqorderby&i from outdata[colname = {"&var" 'orderby'}];
+          append from outdata;
+          close freqorderby&i;
+        quit;
+      %end;
+      proc sql noprint;
+        create table freqtab_sorted&i(drop = &var) as
+        select f.* from freqtab_bystrata&i f
+        left join freqorderby&i o on f.&var = o.&var
+        order by f.rwtype, missing(o.orderby), o.orderby, missing(f.&var), f.&var;
+      quit;
+    %end;
+    %else %do;
+      proc sql noprint;
+        create table freqtab_sorted&i(drop = &var) as
+        select * from freqtab_bystrata&i
+        order by rwtype, 
+        
+        /*HW: sort by specific column*/
+	          %if &sortref ~= %then %do;
+	        	  %let nsortvarlst = %sysfunc(countw(&sortref));
+							%do s = 1 %to &nsortvarlst;
+	    				%let sortval = %scan(&sortref, &s);
+	          	count_ref&sortval desc,
+	          	%end;
+	          %end;
+        
+        missing(&var), &var;
+      quit;
+    %end;
+
+    %rptpush(freqtab_sorted&i);
+  %end;
+%mend;
+
 %macro freqsubgrp(
   indata,           /* Input data set */
   varlst,           /* Variables to be analyzed */
@@ -1053,7 +1238,7 @@
   foldemptysub = 0, /* Fold empty/all missing sub-groups */
   usesublabel = 0,  /* Use sub-group label as the entry label */
   tail = 1,         /* Append descriptive text to the label */
-  format = 4.1      /* Format of the numbers */
+  format = 4.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -1074,8 +1259,8 @@
   %if &missing %then %let missopt = missing;
   %else %let missopt = missprint;
   %if &foldsub ~= or &foldemptysub %then %let subfreq = 1;
-  %if &tail and &nopct %then %let vtail = 'no.';
-  %else %if &tail %then %let vtail = 'no. (%)';
+  %if &tail and &nopct %then %let vtail = 'n';
+  %else %if &tail %then %let vtail = 'n (%)';
   %else %let vtail = '';
 
   data init;
@@ -1124,8 +1309,8 @@
       length col_id result $ 50 col_idlabel varstr $ 250;
       if in_header then do;
         rwtype = 0;
-        %if &usesublabel %then varstr = catx(' - ', vlabel(&subgrp), &vtail);
-        %else varstr = catx(' - ', vlabel(&var), &vtail);;
+        %if &usesublabel %then varstr = catx(', ', vlabel(&subgrp), &vtail);
+        %else varstr = catx(', ', vlabel(&var), &vtail);;
         %if &coln %then result = cat('N = ', count);;
       end;
       else if in_sub or in_subtotal then do;
@@ -1291,6 +1476,383 @@
   %end;
 %mend;
 
+%macro freqsubgrpbypt(
+  indata,           /* Input data set */
+  inptdata,					/* HW: Input patient level data set*/
+  pid, 							/* HW: Patient ID (used for nodupkey)*/
+  varlst,           /* Variables to be analyzed */
+  subgrp,           /* Sub-group variable */
+  strata,           /* Main group */
+  coln = 0,         /* 1 - Column total in header */
+  subfreq = 0,      /* 1 - Show sub-group total and percentages */
+  colpct = 1,       /* 1 - Show column percentages; 0 - Show row percentages */
+  nopct = 0,        /* 1 - No percentage; 0 - Show percentages */
+  pctbysub = 0,     /* 1 - Percentages per sub-groups; 0 - Percentages per the entire group */
+  test = 0,         /* 1 - Pearsons chi-square test; 2 - Fishers exact test */
+  total = 0,        /* 1 - Show total column; 0 - No total column */
+  note = ,          /* Additional footnote */
+  missing = 1,      /* 1 - Include missing in computations of percentages and statistics; 0 - Display missing only */
+  missingtag = 'Missing',
+  orderbytotal = 0, /* Order the rows by total counts */
+  orderby = ,       /* Order the rows by specified values */
+  ordersubby = ,    /* Order the sub-groups by specified values */
+  hidesub = ,       /* Hide specified sub-groups */
+  foldsub = ,       /* Fold specified sub-groups */
+  foldemptysub = 0, /* Fold empty/all missing sub-groups */
+  usesublabel = 0,  /* Use sub-group label as the entry label */
+  tail = 1,         /* Append descriptive text to the label */
+  format = 4.,    	/* Format of the numbers */
+  gendersp = 0,			/* HW: Gender specific percentage (for AE) */
+  sortref = 				/* HW: value of column variable to sort descendingly*/
+  );
+
+  %* Precheck the STRATA variable;
+  %if &rpt_sttvar = %then %do;
+    %let rpt_sttvar = &strata;
+    %let dsid = %sysfunc(open(&indata, i));
+    %let sttnum = %sysfunc(varnum(&dsid, &rpt_sttvar));
+    %let rpt_sttlbl = %qsysfunc(varlabel(&dsid, &sttnum));
+    %let rc = %sysfunc(close(&dsid));
+  %end;
+  %else %if &rpt_sttvar ne &strata %then %do;
+    %put ERROR: Changed main group variable;
+    %abort;
+  %end;
+
+  %if &colpct %then %let pctvar = pct_col;
+  %else %let pctvar = pct_row;
+  %if &missing %then %let missopt = missing;
+  %else %let missopt = missprint;
+  %if &foldsub ~= or &foldemptysub %then %let subfreq = 1;
+  %if &tail and &nopct %then %let vtail = 'n';
+  %else %if &tail %then %let vtail = 'n (%)';
+  %else %let vtail = '';
+
+  data init;
+    set &indata(keep = &pid &varlst &subgrp &strata);
+    where not missing(&strata);
+  run;
+
+	/*2021-08-03 HW*/
+	proc sort data=init nodupkey;
+		by &pid &strata &subgrp &varlst;
+	run;
+	
+	proc sort data=init out=init_nodupsub nodupkey;
+		by &pid &strata &subgrp;
+	run;
+
+	data init_pt;
+		set &inptdata(keep = &pid &strata sex);
+	  where not missing(&strata);
+  run;
+	
+  proc means data = init_pt noprint;
+    class &strata;
+    var &strata;
+    output out = header n = count;
+  run;
+  proc freq data = init_nodupsub noprint;
+    table &subgrp * &strata / sparse &missopt outpct out = subfreqtab_o(drop = percent);
+    table &subgrp / &missopt out = total_subfreqtab; %* Overall;
+  run;
+
+	/*2021-08-03 HW*/
+  proc freq data = init_pt noprint;
+    table &strata / sparse &missopt out = stratabypt;
+    format _all_; 
+  run;
+
+  proc freq data = init_pt noprint;
+  	where sex="M";
+    table &strata / sparse &missopt out = stratabypt_male;
+    format _all_; 
+  run;
+  
+  proc freq data = init_pt noprint;
+  	where sex="F";
+    table &strata / sparse &missopt out = stratabypt_female;
+    format _all_; 
+  run;
+
+	proc sql; 
+	create table subfreqtab as 
+	select a.*, 100*a.count/b.count as percent
+	from subfreqtab_o as a left join stratabypt as b on a.&strata=b.&strata;
+	quit;
+
+  %let nvarlst = %sysfunc(countw(&varlst));
+  %do i = 1 %to &nvarlst;
+    %let var = %scan(&varlst, &i);
+    %if &colpct and not &pctbysub %then %do;
+    	 	
+      proc freq data = init noprint;
+        table &strata * &subgrp * &var / outpct sparse &missopt missprint out = freqtab&i._o(drop = percent);
+        table &subgrp * &var / &missopt out = total_freqtab&i; * Do not use SPARSE;
+      run;
+
+			proc sql; 
+			create table freqtab&i as 
+			select a.*, 
+						 100*a.count/b.count as percent,
+						 100*a.count/m.count as percent_male,
+						 100*a.count/f.count as percent_female
+			from freqtab&i._o as a 
+			left join stratabypt as b on a.&strata=b.&strata
+			left join stratabypt_male as m on a.&strata=m.&strata
+			left join stratabypt_female as f on a.&strata=f.&strata;
+			quit;
+
+      proc sort data = freqtab&i; by &subgrp &var;
+      proc sort data = total_freqtab&i; by &subgrp &var;
+      	  	
+      data freqtab&i;
+        merge freqtab&i total_freqtab&i(keep = &subgrp &var in = in_total);
+        by &subgrp &var;
+        if in_total;
+      run;
+    %end;
+    
+    %else %do;
+      proc sort data = init; by &subgrp;
+      proc freq data = init noprint;
+        by &subgrp;
+        table &var * &strata / outpct sparse &missopt out = freqtab&i(drop = percent rename = (&pctvar = percent));
+        table &var / &missopt out = total_freqtab&i;
+      run;
+    %end;
+
+
+    data freqtab_result&i;
+      %if not &total %then set header(where = (_type_ = 1) in = in_header) subfreqtab(in = in_sub) freqtab&i;
+      %else set header(in = in_header) subfreqtab(in = in_sub) freqtab&i total_subfreqtab(in = in_subtotal) total_freqtab&i(in = in_total);;
+      length col_id result $ 50 col_idlabel varstr $ 250;
+      
+      /*2021-08-03 HW: add gender specific percentage*/
+      %if &gendersp %then %do;
+      	if prxmatch('/\[m\]/i',vvalue(&var)) then percent = percent_male;
+      	if prxmatch('/\[f\]/i',vvalue(&var)) then percent = percent_female;
+      %end;
+
+
+      if in_header then do;
+        rwtype = 0;
+        %if &usesublabel %then varstr = catx(', ', vlabel(&subgrp), &vtail);
+        %else varstr = catx(', ', vlabel(&var), &vtail);;
+        %if &coln %then result = cat('N = ', count);;
+      end;
+      else if in_sub or in_subtotal then do;
+        rwtype = 1;
+        if missing(&subgrp) and strip(vvalue(&subgrp)) in ('', '.') then varstr = &missingtag;
+        else varstr = vvalue(&subgrp);
+        %if &subfreq and &nopct %then %do;
+          result = cat(count);
+        %end;
+        %else %if &subfreq %then %do;
+          if 0 <= percent <= 100 then result = cat(count, ' (', strip(put(percent, &format)), ')');
+          else result = cat(count);
+        %end;
+      end;
+      else do;
+        rwtype = 2;
+        if missing(&var) and strip(vvalue(&var)) in ('', '.') then varstr = &missingtag;
+        else varstr = vvalue(&var);
+        %if &nopct %then %do;
+          result = cat(count);
+        %end;
+        %else %do;
+          if 0 <= percent <= 100 then result = cat(count, ' (', strip(put(percent, &format)), ')');
+          else result = cat(count);
+        %end;
+      end;
+      if (in_header and _type_ = 0) or in_subtotal or in_total then do;
+        col_id = 'rpt_col_total';
+        col_idlabel = 'Total';
+      end;
+      else do;
+        col_id = cats('rpt_col', &strata);
+        col_idlabel = strip(vvalue(&strata));
+      end;
+    run;
+
+    /*2021-08-04 HW: add sort by count (not percent) in specific column*/
+    %if &sortref ~= %then %do;
+    	%let nsortvarlst = %sysfunc(countw(&sortref));
+    	%let sortval_agg = ;
+  		%do s = 1 %to &nsortvarlst;
+	    		%let sortval = %scan(&sortref, &s);
+	    		%let sortval_agg = &sortval_agg count_ref&sortval;
+			    data freqtab_result&i._ref&sortval;
+			    	set freqtab_result&i;
+	    			if col_id = cats('rpt_col', &sortval);
+	    			keep rwtype &subgrp &var varstr count /*col_id*/;
+			    	rename count = count_ref&sortval;
+			    run;
+
+			 		proc sort data = freqtab_result&i;
+			      by rwtype &subgrp &var varstr; 
+			 		proc sort data = freqtab_result&i._ref&sortval;
+			      by rwtype &subgrp &var varstr; 
+			    data freqtab_result&i;
+			    	merge freqtab_result&i freqtab_result&i._ref&sortval;
+			    	by rwtype &subgrp &var varstr; 	    			    	
+			    run;     
+			    
+			%end;
+		
+	    proc sort data = freqtab_result&i;
+	      by rwtype &subgrp &sortval_agg &var varstr;
+	    run;
+    %end;
+
+    %else %do;
+		    proc sort data = freqtab_result&i;
+		      by rwtype &subgrp &var varstr;
+		    run;
+	  %end;
+
+    proc transpose data = freqtab_result&i out = freqtab_bystrata&i(drop = _name_);
+      by rwtype &subgrp %if &sortref ~= %then &sortval_agg; &var varstr;
+      id col_id;
+      idlabel col_idlabel;
+      var result;
+    run;
+		
+    proc sort data = freqtab_bystrata&i;
+      by rwtype &subgrp &var varstr;		
+		run;
+		
+    %if &hidesub ~= or &foldsub ~= or &foldemptysub %then %do;
+      proc sql noprint;
+        %if &hidesub ~= %then delete from freqtab_bystrata&i where rwtype in (1, 2) and &subgrp in (&hidesub);;
+        %if &foldsub ~= %then delete from freqtab_bystrata&i where rwtype = 2 and &subgrp in (&foldsub);;
+        %if &foldemptysub %then
+        delete from freqtab_bystrata&i f where rwtype = 2 and (
+        select count(&var) from freqtab_result&i where rwtype = 2 and &subgrp = f.&subgrp) = 0;;
+      quit;
+    %end;
+
+    %if &test >= 1 %then %do;
+      %if &test = 1 %then %let testtype = chisq;
+      %else %if &test = 2 %then %let testtype = exact;
+      %rpttest(init, &var, &strata, by = &subgrp, type = &testtype, testopt = &missopt);
+      proc sql noprint;
+        alter table freqtab_bystrata&i add rpt_col_pval varchar(20), plabel varchar(25);
+        update freqtab_bystrata&i f set rpt_col_pval = (select put(pvalue, pvalue4.2) from rpt_outtest where &subgrp = f.&subgrp),
+        plabel = (select plabel from rpt_outtest where &subgrp = f.&subgrp) where rwtype = 1;
+      quit;
+    %end;
+
+    %if &note ~= %then %do;
+      proc sql noprint;
+        alter table freqtab_bystrata&i add rpt_col_note varchar(500);
+        update freqtab_bystrata&i set rpt_col_note = &note where rwtype = 0;
+      quit;
+    %end;
+
+    %if &ordersubby ~= %then %do;
+      proc iml;
+        vval = t({&ordersubby});
+        nval = nrow(vval);
+        vseq = t(do(1, nval, 1));
+        outdata = vval || vseq;
+        create freqordersubby&i from outdata[colname = {"&subgrp" 'orderby'}];
+        append from outdata;
+        close freqordersubby&i;
+      quit;
+    %end;
+    %if &orderbytotal %then %do;
+      data freqorderby&i;
+        set total_freqtab&i;
+        orderby = 100 - percent;
+        keep &subgrp &var orderby;
+      run;
+    %end;
+    %else %if &orderby ~= %then %do;
+      proc iml;
+        vval = t({&orderby});
+        nval = nrow(vval);
+        vseq = t(do(1, nval, 1));
+        outdata = vval || vseq;
+        create freqorderby&i from outdata[colname = {"&var" 'orderby'}];
+        append from outdata;
+        close freqorderby&i;
+      quit;
+    %end;
+    %if &ordersubby ~= %then %do;
+      %if &orderbytotal %then %do;
+        proc sql noprint;
+          create table freqtab_sorted&i(drop = &subgrp &var) as
+          select f.* from freqtab_bystrata&i f
+          left join freqordersubby&i s on f.&subgrp = s.&subgrp
+          left join freqorderby&i o on f.&subgrp = o.&subgrp and f.&var = o.&var
+          order by ifn(f.rwtype > 0, 1, 0), missing(s.orderby), s.orderby, missing(f.&subgrp), f.&subgrp,
+          ifn(f.rwtype > 1, 1, 0), o.orderby, missing(f.&var), f.&var;
+        quit;
+      %end;
+      %else %if &orderby ~= %then %do;
+        proc sql noprint;
+          create table freqtab_sorted&i(drop = &subgrp &var) as
+          select f.* from freqtab_bystrata&i f
+          left join freqordersubby&i s on f.&subgrp = s.&subgrp
+          left join freqorderby&i o on f.&var = o.&var
+          order by ifn(f.rwtype > 0, 1, 0), missing(s.orderby), s.orderby, missing(f.&subgrp), f.&subgrp,
+          ifn(f.rwtype > 1, 1, 0), missing(o.orderby), o.orderby, missing(f.&var), f.&var;
+        quit;
+      %end;
+      %else %do;
+        proc sql noprint;
+          create table freqtab_sorted&i(drop = &subgrp &var) as
+          select * from freqtab_bystrata&i f
+          left join freqordersubby&i s on f.&subgrp = s.&subgrp
+          order by ifn(f.rwtype > 0, 1, 0), missing(s.orderby), s.orderby, missing(f.&subgrp), f.&subgrp,
+          ifn(f.rwtype > 1, 1, 0), missing(f.&var), f.&var;
+        quit;
+      %end;
+    %end;
+    %else %do;
+      %if &orderbytotal %then %do;
+        proc sql noprint;
+          create table freqtab_sorted&i(drop = &subgrp &var) as
+          select f.* from freqtab_bystrata&i f
+          left join freqorderby&i o on f.&subgrp = o.&subgrp and f.&var = o.&var
+          order by ifn(f.rwtype > 0, 1, 0), missing(f.&subgrp), f.&subgrp,
+          ifn(f.rwtype > 1, 1, 0), o.orderby, missing(f.&var), f.&var;
+        quit;
+      %end;
+      %else %if &orderby ~= %then %do;
+        proc sql noprint;
+          create table freqtab_sorted&i(drop = &subgrp &var) as
+          select f.* from freqtab_bystrata&i f
+          left join freqorderby&i o on f.&var = o.&var
+          order by ifn(f.rwtype > 0, 1, 0), missing(f.&subgrp), f.&subgrp,
+          ifn(f.rwtype > 1, 1, 0), missing(o.orderby), o.orderby, missing(f.&var), f.&var;
+        quit;
+      %end;
+      %else %do;
+        proc sql noprint;
+          create table freqtab_sorted&i(drop = &subgrp &var) as
+          select * from freqtab_bystrata&i
+          order by ifn(rwtype > 0, 1, 0), missing(&subgrp), &subgrp,
+          
+          /*HW: sort by specific column*/
+          %if &sortref ~= %then %do;
+        	  %let nsortvarlst = %sysfunc(countw(&sortref));
+						%do s = 1 %to &nsortvarlst;
+    				%let sortval = %scan(&sortref, &s);
+          	count_ref&sortval desc,
+          	%end;
+          %end;
+          
+          ifn(rwtype > 1, 1, 0), missing(&var), &var;
+        quit;
+      %end;
+    %end;
+
+    %rptpush(freqtab_sorted&i);
+  %end;
+%mend;
+
 %macro median(
   indata,       /* Input dataset */
   varlst,       /* Variables to be analyzed */
@@ -1299,7 +1861,7 @@
   total = 0,    /* 1 - Show total column; 0 - No total column */
   note = ,      /* Additional footnote */
   tail = 1,     /* Append descriptive text to the label */
-  format = 8.1  /* Format of the numbers */
+  format = 8.  /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -1337,7 +1899,7 @@
       %else set median&i;;
       length col_id result $ 50 col_idlabel varstr $ 250;
       rwtype = 0;
-      varstr = catx(' - ', vlabel(&var), &vtail);
+      varstr = catx(', ', vlabel(&var), &vtail);
       if n > 0 then result = cat(strip(put(p50, &format)), ' (', strip(put(min, &format)), '-', strip(put(max, &format)), ')');
       else result = 'NE';
       if _type_ = 0 then do;
@@ -1391,7 +1953,7 @@
   missingtag = 'Missing',
   ordersubby = ,    /* Order the sub-groups by specified values */
   tail = 1,         /* Append descriptive text to the label */
-  format = 8.1      /* Format of the numbers */
+  format = 8.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -1430,8 +1992,8 @@
       length col_id result $ 50 col_idlabel varstr $ 250;
       if _type_ in (0, 2) then do;
         rwtype = 0;
-        %if &usesublabel %then varstr = catx(' - ', vlabel(&subgrp), &vtail);
-        %else varstr = catx(' - ', vlabel(&var), &vtail);;
+        %if &usesublabel %then varstr = catx(', ', vlabel(&subgrp), &vtail);
+        %else varstr = catx(', ', vlabel(&var), &vtail);;
       end;
       else do;
         rwtype = 1;
@@ -1517,9 +2079,9 @@
   orderbytotal = 0, /* Order rows by total counts */
   orderby = ,       /* Order rows by specified values */
   tail = 1,         /* Append descriptive text to the label */
-  mformat = 8.1,    /* Format of the univariate part */
-  sformat = 8.2,    /* Format of the standard errors in the univariate part */
-  fformat = 4.1     /* Format of the frequency part */
+  mformat = 8.,    /* Format of the univariate part */
+  sformat = 8.1,    /* Format of the standard errors in the univariate part */
+  fformat = 4.     /* Format of the frequency part */
   );
 
   %* Precheck the STRATA variable;
@@ -1544,13 +2106,7 @@
     %let fvarlst = &fvarlst %sysfunc(prxchange(%str(s/.+\|(.+)/$1/), 1, &varkey));
   %end;
 
-  %univar(
-    &indata, &mvarlst, &strata,
-    total = &total,
-    outstat = &outstat,
-    format = &mformat,
-    sformat = &sformat
-  );
+
   %freq(
     &indata, &fvarlst, &strata,
     total = &total,
@@ -1562,6 +2118,13 @@
     tail = &tail,
     format = &fformat,
     note = &note
+  );
+  %univar(
+    &indata, &mvarlst, &strata,
+    total = &total,
+    outstat = &outstat,
+    format = &mformat,
+    sformat = &sformat
   );
 
   %let mtablst = ;
@@ -1591,7 +2154,7 @@
   total = 0,    /* 1 - Show total column; 0 - No total column */
   test = 0,     /* 1 - Do baseline test; 0 - No test */
   tail = 1,     /* Append descriptive text to the label */
-  format = 8.1  /* Format of the numbers */
+  format = 8.  /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -1612,7 +2175,7 @@
 
   data mheader;
     length varstr $ 250;
-    varstr = catx(' - ', &label, &vtail);
+    varstr = catx(', ', &label, &vtail);
     rwtype = 0;
   run;
 
@@ -1692,7 +2255,7 @@
       %else set univar&i;;
       length col_id result $ 50 col_idlabel varstr $ 250;
       rwtype = 0;
-      varstr = catx(' - ', vlabel(&var), &vtail);
+      varstr = catx(', ', vlabel(&var), &vtail);
       if not missing(&statkey) then result = strip(put(&statkey, &format));
       else result = 'NE';
       if _type_ = 0 then do;
@@ -1731,8 +2294,11 @@
   total = 0,    /* 1 - Show total column; 0 - No total column */
   note = ,      /* Additional footnote */
   outstat = n_total mean_std median_p25_p75 min_max,
-  format = 8.1, /* Format of the numbers */
-  sformat = 8.2 /* Format of the standard errors */
+  format = 8., 	/* Format of the numbers */
+  sformat = 8.1,/* Format of the standard errors */
+  mformat = 8.,	/* HW: Format of min, max*/
+  qformat = 8.1,/* HW: Format of quantile*/
+  ntail = 			/* HW: tail of n (count) parameter, such as [1]*/
   );
 
   %* Precheck the STRATA variable;
@@ -1754,7 +2320,9 @@
     value $statkeyfmt
     n_nmiss = 'n / Missing'
     n_total = 'n / N'
-    n = 'n'
+    /*2021-08-16 HW: n (count) tail*/
+			%if &ntail NE %then n = "n &ntail";
+	    %else n = 'n';
     nmiss = 'Missing'
     mean_std = 'Mean (SD)'
     mean = 'Mean'
@@ -1762,11 +2330,11 @@
     median = 'Median'
     min = 'Min'
     max = 'Max'
-    min_max = 'Min-Max'
-    p5_p95 = '5th-95th pctl'
+    min_max = 'Min, Max'
+    p5_p95 = '5th, 95th pctl'
     p5 = '5th pctl'
     p95 = '95th pctl'
-    p25_p75 = '25th-75th pctl'
+    p25_p75 = 'Q1, Q3'
     p25 = '25th pctl'
     p75 = '75th pctl'
     median_min_max = 'Median (min-max)'
@@ -1812,7 +2380,7 @@
       %do k = 1 %to &nstatkey;
         %let statkey = %lowcase(%scan(&outstat, &k));
         kid = &k;
-        varstr = put("&statkey", $statkeyfmt.);
+        varstr = put("&statkey", $statkeyfmt.);       
         %if &statkey = n or &statkey = nmiss %then %do;
           result = cat(&statkey);
         %end;
@@ -1832,10 +2400,16 @@
         %else %if &statkey = n_total %then %do;
           result = catx('/', n, n + nmiss);
         %end;
-        %else %if &statkey = min_max or &statkey = p5_p95 or &statkey = p25_p75 %then %do;
+        %else %if &statkey = min_max %then %do;
           %let statkeypt1 = %scan(&statkey, 1, _);
           %let statkeypt2 = %scan(&statkey, 2, _);
-          if n > 0 then result = catx('-', put(&statkeypt1, &format), put(&statkeypt2, &format));
+          if n > 0 then result = catx(', ', put(&statkeypt1, &mformat), put(&statkeypt2, &mformat));
+          else result = 'N/A';
+        %end;
+      	%else %if &statkey = p5_p95 or &statkey = p25_p75 %then %do;
+          %let statkeypt1 = %scan(&statkey, 1, _);
+          %let statkeypt2 = %scan(&statkey, 2, _);
+          if n > 0 then result = catx(', ', put(&statkeypt1, &qformat), put(&statkeypt2, &qformat));
           else result = 'N/A';
         %end;
         %else %if &statkey = mean_std %then %do;
@@ -1883,12 +2457,13 @@
   showci = 1,       /* Display proportion CIs */
   denominator = 1,  /* 1 - Show denominator; 0 - Do not show denominator */
   total = 0,        /* 1 - Show total column; 0 - No total column */
-  test = 0,         /* 1 - Chi-square test; 2 - Fishers exact test */
   note = ,          /* Additional footnote */
   missing = 1,      /* 1 - Include missing in computations of proportions and statistics */
   tail = 1,         /* Append descriptive text to the label */
-  fformat = 4.1,    /* Format of the frequency percentages */
-  pformat = 8.1     /* Format of the proportions */
+  fformat = 4.,     /* Format of the frequency percentages */
+  pformat = 8.,     /* Format of the proportions */
+  rpt_lbl1 =, 			/* HW: add additional columns to output*/
+  rpt_lbl2 = 				/* HW: add additional columns to output*/  
   );
 
   %* Precheck the STRATA variable;
@@ -1906,8 +2481,8 @@
 
   %if &missing %then %let missopt = missing;
   %else %let missopt = missprint;
-  %if &tail and &denominator %then %let vtail = 'no./total no. (%)';
-  %else %if &tail %then %let vtail = 'no. (%)';
+  %if &tail and &denominator %then %let vtail = 'n/total n (%)';
+  %else %if &tail %then %let vtail = 'n (%)';
   %else %let vtail = '';
 
   data init;
@@ -1970,7 +2545,7 @@
       end;
       %* Header;
       rwtype = 0;
-      varstr = catx(' - ', vlabel(&var), &vtail);
+      varstr = catx(', ', vlabel(&var), &vtail);
       %if &denominator %then %do;
         %if &missing %then %let ntotal = n + nmiss;
         %else %let ntotal = n;
@@ -1998,22 +2573,15 @@
       var result;
     run;
 
-    %* Chi-square p-value;
-    %if &test >= 1 %then %do;
-      %if &test = 1 %then %let testtype = chisq;
-      %else %if &test = 2 %then %let testtype = exact;
-      data init_proptest;
-        set init;
-        keep &var &strata;
-        if missing(&var) then %if &missing %then &var = 0; %else delete;;
-      run;
-      %rpttest(init_proptest, &var, &strata, type = &testtype);
-      proc sql noprint;
-        alter table proptab_bystrata&i add rpt_col_pval varchar(20), plabel varchar(25);
-        update proptab_bystrata&i set rpt_col_pval = (select put(pvalue, pvalue4.2) from rpt_outtest),
-        plabel = (select plabel from rpt_outtest) where rwtype = 0;
-      quit;
-    %end;
+		/*2021-09-06 HW: add additional columns to fit Everest RGH ISS T8-3.1.1*/
+		%if &rpt_lbl1 ~= %then %do;
+			data proptab_bystrata&i;
+				set proptab_bystrata&i;
+				length rpt_lbl1 rpt_lbl2 $100;
+				rpt_lbl1 = &rpt_lbl1;
+				rpt_lbl2 = &rpt_lbl2;				
+			run;
+		%end;
 
     %if &note ~= %then %do;
       proc sql noprint;
@@ -2039,7 +2607,7 @@
   orderbytotal = 0, /* Order the rows by total counts */
   sparse = 0,       /* 1 - Display variables with zero count */
   tail = 1,         /* Append descriptive text to the label */
-  format = 4.1      /* Format of the numbers */
+  format = 4.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -2060,8 +2628,8 @@
   %else %let hoffset = 1;
   %if &missing %then %let missopt = missing;
   %else %let missopt = missprint;
-  %if &tail and &denominator %then %let vtail = 'no./total no. (%)';
-  %else %if &tail %then %let vtail = 'no. (%)';
+  %if &tail and &denominator %then %let vtail = 'n/total n (%)';
+  %else %if &tail %then %let vtail = 'n (%)';
   %else %let vtail = '';
 
   data init;
@@ -2143,7 +2711,7 @@
     length col_id result $ 50 col_idlabel varstr $ 250;
     if in_header then do;
       rwtype = 0;
-      varstr = catx(' - ', &label, &vtail);
+      varstr = catx(', ', &label, &vtail);
     end;
     else do;
       %if not &sparse %then if count = 0 then delete;;
@@ -2241,7 +2809,7 @@
   usesublabel = 0,  /* Use sub-group label as header label */
   note = ,          /* Additional footnote */
   tail = 1,         /* Append descriptive text to the label */
-  format = 4.1      /* Format of the numbers */
+  format = 4.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -2262,8 +2830,8 @@
   %else %let missopt = missprint;
   %if &missing %then %let missclassopt = missing;
   %else %let missclassopt = ;
-  %if &tail and &denominator %then %let vtail = 'no./total no. (%)';
-  %else %if &tail %then %let vtail = 'no. (%)';
+  %if &tail and &denominator %then %let vtail = 'n/total n (%)';
+  %else %if &tail %then %let vtail = 'n (%)';
   %else %let vtail = '';
 
   data init;
@@ -2362,8 +2930,8 @@
     length col_id result $ 50 col_idlabel varstr $ 250;
     if in_header then do;
       rwtype = 0;
-      %if &usesublabel %then varstr = catx(' - ', vlabel(&subgrp), &vtail);
-      %else varstr = catx(' - ', &label, &vtail);;
+      %if &usesublabel %then varstr = catx(', ', vlabel(&subgrp), &vtail);
+      %else varstr = catx(', ', &label, &vtail);;
     end;
     else if in_sub or in_subtotal then do;
       rwtype = 1;
@@ -2500,6 +3068,290 @@
   %rptpush(proptab_sorted);
 %mend;
 
+%macro proplstsubgrpbypt(
+  indata,           /* Input data set */
+  inptdata,					/* HW: Input patient level dataset*/
+  pid,							/* HW: Patient ID (for sort nodupkey)*/
+  varkeylst,        /* Variable list */
+  subgrp,           /* Sub-group variable */
+  strata,           /* Main group */
+  label = '',       /* Header label */
+  subfreq = 1,      /* 1 - Show sub-group counts and percentages; 0 - Hide sub-group counts and percentages */
+  pctbysub = 0,     /* 1 - Percentages per sub-groups; 0 - Percentages per the entire group */
+  denominator = 1,  /* 1 - Show denominator; 0 - Do not show denominator */
+  total = 0,        /* 1 - Show total column; 0 - No total column */
+  missing = 1,      /* 1 - Include missing in computations of percentages, proportions and statistics */
+  missingtag = 'Missing',
+  orderbytotal = 0, /* Order rows by total counts */
+  ordersubby = ,    /* Order sub-groups by specified values */
+  foldsub = ,       /* Fold specified sub-groups */
+  usesublabel = 0,  /* Use sub-group label as header label */
+  note = ,          /* Additional footnote */
+  tail = 1,         /* Append descriptive text to the label */
+  format = 4.,      /* Format of the numbers */
+  gendersp = 0,			/* HW: gdner specific percentage (for AE)*/
+  sortref = ,				/* HW: value of column variable to sort descendingly */
+  sortrefsubyn = 0	/* HW: 1 = Sort by subgroup var; 0 - Sort by lowest level variable*/
+  );
+
+  %* Precheck the STRATA variable;
+  %if &rpt_sttvar = %then %do;
+    %let rpt_sttvar = &strata;
+    %let dsid = %sysfunc(open(&indata, i));
+    %let sttnum = %sysfunc(varnum(&dsid, &rpt_sttvar));
+    %let rpt_sttlbl = %qsysfunc(varlabel(&dsid, &sttnum));
+    %let rc = %sysfunc(close(&dsid));
+  %end;
+  %else %if &rpt_sttvar ne &strata %then %do;
+    %put ERROR: Changed main group variable;
+    %abort;
+  %end;
+
+  %let varlst = %sysfunc(prxchange(%str(s/>>|<<//), -1, %quote(&varkeylst)));
+  %if &missing %then %let missopt = missing;
+  %else %let missopt = missprint;
+  %if &missing %then %let missclassopt = missing;
+  %else %let missclassopt = ;
+  %if &tail and &denominator %then %let vtail = 'n/total n (%)';
+  %else %if &tail %then %let vtail = 'n (%)';
+  %else %let vtail = '';
+
+  data init;
+    set &indata(keep = &varlst &strata &subgrp);
+    where not missing(&strata);
+  run;
+
+  proc sql noprint;
+    create table header as
+    select distinct &strata from init;
+  quit;
+  proc freq data = init noprint;
+    table &subgrp * &strata / sparse &missopt outpct out = subfreqtab(drop = percent rename = (pct_col = percent)); %* By STRATA;
+    table &subgrp / &missopt out = total_subfreqtab; %* Overall;
+  run;
+
+  %let offset = 0;
+  %let varid = 0;
+  %let propvarlst = ;
+  %let proptablst = ;
+  %let total_proptablst = ;
+  %let nvarkeylst = %sysfunc(countw(%quote(&varkeylst), %str( )));
+  %do i = 1 %to &nvarkeylst;
+    %let varkey = %scan(%quote(&varkeylst), &i, %str( ));
+    %if %quote(&varkey) = %str(>>) %then %let offset = %eval(&offset + 1);
+    %else %if %quote(&varkey) = %str(<<) %then %do;
+      %if &offset > 0 %then %let offset = %eval(&offset - 1);
+      %else %let offset = 0;
+    %end;
+    %else %do;
+      %let var = &varkey;
+      %let varid = %eval(&varid + 1);
+      %if not &pctbysub %then %do;
+        proc freq data = init noprint;
+          table &strata * &subgrp * &var / outpct sparse &missopt out = freqtab&i(drop = percent rename = (pct_tabl = percent));
+          table &subgrp * &var / &missopt out = total_freqtab&i; * Do not use SPARSE;
+        run;
+        proc sort data = freqtab&i; by &subgrp &var;
+        proc sort data = total_freqtab&i; by &subgrp &var;
+        data freqtab&i;
+          merge freqtab&i total_freqtab&i(keep = &subgrp &var in = in_total);
+          by &subgrp &var;
+          if in_total;
+        run;
+
+        proc means data = init noprint;
+          class &strata &subgrp / &missclassopt;
+          var &var;
+          output out = ntab&i n = n nmiss = nmiss;
+        run;
+        proc sql noprint;
+          create table proptab&i as
+          select &varid as varid, &offset as offset, f.*, b.n, b.nmiss from freqtab&i(where = (&var = 1)) f
+          left join ntab&i(where = (_type_ = 2)) b on f.&strata = b.&strata;
+          create table total_proptab&i as
+          select &varid as varid, &offset as offset, f.*, b.n, b.nmiss from total_freqtab&i(where = (&var = 1)) f
+          cross join ntab&i(where = (_type_ = 0)) b;
+        quit;
+      %end;
+      %else %do;
+        proc sort data = init; by &subgrp;
+        proc freq data = init noprint;
+          by &subgrp;
+          table &var * &strata / outpct sparse &missopt out = freqtab&i(drop = percent rename = (pct_col = percent)); %* By STRATA;
+          table &var / &missopt out = total_freqtab&i; %* Overall;
+        run;
+
+        proc means data = init noprint;
+          class &strata &subgrp / &missclassopt;
+          var &var;
+          output out = ntab&i n = n nmiss = nmiss;
+        run;
+
+        proc sql noprint;
+          create table proptab&i as
+          select &varid as varid, &offset as offset, f.*, b.n, b.nmiss from freqtab&i(where = (&var = 1)) f
+          left join ntab&i(where = (_type_ = 3)) b on f.&strata = b.&strata and f.&subgrp = b.&subgrp;
+          create table total_proptab&i as
+          select &varid as varid, &offset as offset, f.*, b.n, b.nmiss from total_freqtab&i(where = (&var = 1)) f
+          left join ntab&i(where = (_type_ = 1)) b on f.&subgrp = b.&subgrp;
+        quit;
+      %end;
+      %let propvarlst = &propvarlst &var;
+      %let proptablst = &proptablst proptab&i;
+      %let total_proptablst = &total_proptablst total_proptab&i;
+    %end;
+  %end;
+
+  data proptab;
+    set &proptablst;
+  data total_proptab;
+    set &total_proptablst;
+  data proptab_result;
+    %if not &total %then set header(in = in_header) subfreqtab(in = in_sub) proptab;
+    %else set header(in = in_header) subfreqtab(in = in_sub) proptab
+    total_subfreqtab(in = in_subtotal) total_proptab(in = in_total);;
+    length col_id result $ 50 col_idlabel varstr $ 250;
+    if in_header then do;
+      rwtype = 0;
+      %if &usesublabel %then varstr = catx(', ', vlabel(&subgrp), &vtail);
+      %else varstr = catx(', ', &label, &vtail);;
+    end;
+    else if in_sub or in_subtotal then do;
+      rwtype = 1;
+      if missing(&subgrp) and strip(vvalue(&subgrp)) in ('', '.') then varstr = &missingtag;
+      else varstr = vvalue(&subgrp);
+      %if &subfreq %then %do;
+        if 0 <= percent <= 100 then result = cat(count, ' (', strip(put(percent, &format)), ')');
+        else result = cat(count);
+      %end;
+    end;
+    else do;
+      rwtype = 2 + offset;
+      array propvarlst{*} &propvarlst;
+      varstr = vlabel(propvarlst{varid});
+      %if &denominator %then %do;
+        %if &missing %then %let ntotal = n + nmiss;
+        %else %let ntotal = n;
+        if 0 <= percent <= 100 then result = cat(count, '/', &ntotal, ' (', strip(put(percent, &format)), ')');
+        else result = cat(count, '/', &ntotal);
+      %end;
+      %else %do;
+        if 0 <= percent <= 100 then result = cat(count, ' (', strip(put(percent, &format)), ')');
+        else result = cat(count);
+      %end;
+    end;
+    if in_subtotal or in_total then do;
+      col_id = 'rpt_col_total';
+      col_idlabel = 'Total';
+    end;
+    else do;
+      col_id = cats('rpt_col', &strata);
+      col_idlabel = strip(vvalue(&strata));
+    end;
+  run;
+  proc sort data = proptab_result;
+    by &subgrp rwtype varid varstr;   
+    
+  proc transpose data = proptab_result out = proptab_bystrata(drop = _name_);
+    by &subgrp rwtype varid varstr;
+    id col_id;
+    idlabel col_idlabel;
+    var result;
+  run;
+
+  %if &foldsub ~= %then %do;
+    proc sql noprint;
+      delete from proptab_bystrata where rwtype > 1 and &subgrp in (&foldsub);
+    quit;
+  %end;
+
+  %if &note ~= %then %do;
+    proc sql noprint;
+      alter table proptab_bystrata add rpt_col_note varchar(500);
+      update proptab_bystrata set rpt_col_note = &note where rwtype = 0;
+    quit;
+  %end;
+
+  %if &ordersubby ~= %then %do;
+    proc iml;
+      vval = t({&ordersubby});
+      nval = nrow(vval);
+      vseq = t(do(1, nval, 1));
+      outdata = vval || vseq;
+      create propordersubby from outdata[colname = {"&subgrp" 'orderby'}];
+      append from outdata;
+      close propordersubby;
+    quit;
+  %end;
+  %if &orderbytotal %then %do;
+    proc sql noprint;
+      select max(offset) + 1 into :noffsetlevels trimmed from total_proptab;
+    quit;
+    proc sort data = total_proptab;
+      by varid;
+    data proporderby;
+      set total_proptab;
+      by varid;
+      retain orderby1-orderby&noffsetlevels;
+      array orderbylst{&noffsetlevels} orderby1-orderby&noffsetlevels;
+      do i = 1 to &noffsetlevels;
+        if i = offset + 1 then orderbylst{i} = 100 - percent;
+        else if i > offset + 1 then call missing(orderbylst{i});
+      end;
+      keep varid orderby1-orderby&noffsetlevels;
+    run;
+  %end;
+  %if &ordersubby ~= %then %do;
+    %if &orderbytotal %then %do;
+      proc sql noprint;
+        create table proptab_sorted(drop = &subgrp varid) as
+        select p.* from proptab_bystrata p
+        left join propordersubby s on p.&subgrp = s.&subgrp
+        left join proporderby o on p.&subgrp = o.&subgrp and p.varid = o.varid
+        order by ifn(p.rwtype > 0, 1, 0), missing(s.orderby), s.orderby, missing(p.&subgrp), p.&subgrp,
+        ifn(p.rwtype > 1, 1, 0),
+        %do f = 1 %to &noffsetlevels;
+          o.orderby&f,
+        %end;
+        p.varid;
+      quit;
+    %end;
+    %else %do;
+      proc sql noprint;
+        create table proptab_sorted(drop = &subgrp varid) as
+        select p.* from proptab_bystrata p
+        left join propordersubby s on p.&subgrp = s.&subgrp
+        order by ifn(p.rwtype > 0, 1, 0), missing(s.orderby), s.orderby, missing(p.&subgrp), p.&subgrp,
+        ifn(p.rwtype > 1, 1, 0), p.varid;
+      quit;
+    %end;
+  %end;
+  %else %do;
+    %if &orderbytotal %then %do;
+      proc sql noprint;
+        create table proptab_sorted(drop = &subgrp varid) as
+        select p.* from proptab_bystrata p
+        left join proporderby o on p.&subgrp = o.&subgrp and p.varid = o.varid
+        order by ifn(p.rwtype > 0, 1, 0), missing(p.&subgrp), p.&subgrp,
+        ifn(p.rwtype > 1, 1, 0),
+        %do f = 1 %to &noffsetlevels;
+          o.orderby&f,
+        %end;
+        p.varid;
+      quit;
+    %end;
+    %else %do;
+      proc sql noprint;
+        create table proptab_sorted(drop = &subgrp varid) as
+        select * from proptab_bystrata
+        order by ifn(rwtype > 0, 1, 0), missing(&subgrp), &subgrp, ifn(rwtype > 1, 1, 0), varid;
+      quit;
+    %end;
+  %end;
+
+  %rptpush(proptab_sorted);
+%mend;
+
 %macro catalst(
   indata,           /* Input dataset */
   varlst,           /* Variables to be analyzed */
@@ -2512,7 +3364,7 @@
   total = 0,        /* 1 - Show total column; 0 - No total column */
   note = ,          /* Additional footnote */
   tail = 1,         /* Append descriptive text to the label */
-  format = 4.1      /* Format of the numbers */
+  format = 4.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -2571,7 +3423,7 @@
   ordersubby = ,    /* Order sub-groups by specified values */
   note = ,          /* Additional footnote */
   tail = 1,         /* Append descriptive text to the label */
-  format = 4.1      /* Format of the numbers */
+  format = 4.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -2628,7 +3480,7 @@
   note = ,          /* Additional footnote */
   ci = 1,           /* 1 - Show CI; 0 - Hide CI */
   tail = 1,         /* Append descriptive text to the label */
-  format = 8.1      /* Format of the numbers */
+  format = 8.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -2672,7 +3524,7 @@
     where parameter = 'Intercept';
     length col_id result $ 50 col_idlabel varstr $ 250;
     rwtype = 0;
-    varstr = catx(' - ', &label, &vtail);
+    varstr = catx(', ', &label, &vtail);
     irppt = exp(-estimate);
     irppt_lcl = exp(-uppercl);
     irppt_ucl = exp(-lowercl);
@@ -2725,7 +3577,7 @@
   total = 0,        /* 1 - Show total column; 0 - No total column */
   note = ,          /* Additional footnote */
   tail = 1,         /* Append descriptive text to the label */
-  format = 8.1      /* Format of the numbers */
+  format = 8.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -2824,7 +3676,7 @@
     length col_id result $ 50 varstr $ 250;
     if in_header then do;
       rwtype = 0;
-      varstr = catx(' - ', &label, &vtail);
+      varstr = catx(', ', &label, &vtail);
     end;
     else do;
       rwtype = 1;
@@ -2902,7 +3754,7 @@
   total = 0,        /* 1 - Show total column; 0 - No total column */
   note = ,          /* Additional footnote */
   tail = 1,         /* Append descriptive text to the label */
-  format = 4.1      /* Format of the numbers */
+  format = 4.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -2981,7 +3833,7 @@
     length col_id result $ 50 col_idlabel varstr $ 250;
     if in_header then do;
       rwtype = 0;
-      varstr = catx(' - ', &label, &vtail);
+      varstr = catx(', ', &label, &vtail);
     end;
     else do;
       rwtype = 1;
@@ -3091,7 +3943,7 @@
   showq1q3 = 0,     /* Show Q1 and Q3 follow-up */
   note = ,          /* Additional footnote */
   tail = 1,         /* Append descriptive text to the label */
-  format = 8.1      /* Format of the numbers */
+  format = 8.      /* Format of the numbers */
   );
 
   %* Precheck the STRATA variable;
@@ -3184,7 +4036,7 @@
     %end;
     %else %do;
       rwtype = 0;
-      varstr = catx(' - ', &label, &vtail);
+      varstr = catx(', ', &label, &vtail);
       result = cat(ifc(not missing(pc50), strip(put(pc50, &format)), 'NE'), ' (', strip(put(pc0, &format)), '-', strip(put(pc100, &format)), ')');
     %end;
   run;
@@ -3212,11 +4064,12 @@
   title,                  /* Title of the table */
   footer = ,              /* Additional footnote */
   orientation = portrait, /* Orientation of the page */
-  style = kenyrtf,        /* Style of the table */
+  style = rtf,				    /* Style of the table */
   outfmt = rtf,           /* Format of the output file */
   regex = 's/^-?\d+([.-]\d+)?\s+//',
   mask = 0,               /* 1: Mask the output results */
-  delay = 0               /* 1: Delay output; 0: Do not delay output */
+  delay = 0,              /* 1: Delay output; 0: Do not delay output */
+  genrpt = 1							/* HW: supress for validation which only needs dataset*/
   );
 
   %* Precheck if report results exist;
@@ -3297,119 +4150,127 @@
     quit;
   %end;
 
-  %let m_size = 40; %* Define the size of left margin;
-  %let c_size = 20; %* Define the size of each column;
-  %let p_size =  8; %* Define the size of test column;
+	%if &genrpt %then %do;
 
-  %let ls = %eval(4 + &m_size + &rpt_coln * (4 + &c_size));
-  %if &rpt_pcol %then %let ls = %eval(&ls + 4 + &p_size);
-  %if &rpt_tcol %then %let ls = %eval(&ls + 4 + &c_size);
-  %if &ls < 64 %then %let ls = 64;
-  %else %if &ls > 256 %then %let ls = 256;
-  %let ps = %eval(4 + &nlines);
-  %if &rpt_pcol %then %let ps = %eval(&ps + 1);
-  %if &rpt_ncol %then %let ps = %eval(&ps + &nnfooter);
-  %if &footer ~= %then %let ps = %eval(&ps + 1);
-  %if &ps < 15 %then %let ps = 15;
-  %else %if &ps > 32767 %then %let ps = 32767;
-  %let opt_save = %sysfunc(getoption(orientation, keyword))
-  %sysfunc(getoption(linesize, keyword)) %sysfunc(getoption(pagesize, keyword));
-  options orientation = &orientation ls = &ls ps = &ps label number;
-
-  title &title;
-  ods proclabel &title;
-  %if &delay %then %do;
-    %let rpt_fid = %eval(&rpt_fid + 1);
-    %do %while(%sysfunc(prxmatch(%str(/\b&outfile#?\b/i), &rpt_output_delayed_files)));
-      %if %sysfunc(prxmatch(%str(/\d+$/), &outfile)) %then %do;
-        %let outfilepre = %sysfunc(prxchange(%str(s/^(\w+?)\d+$/$1/), 1, &outfile));
-        %let outfileext = %eval(%sysfunc(prxchange(%str(s/^\w+?(\d+)$/$1/), 1, &outfile)) + 1);
-      %end;
-      %else %do;
-        %let outfilepre = &outfile;
-        %let outfileext = 1;
-      %end;
-      %let outfile = &outfilepre&outfileext;
-    %end;
-    %if &orientation = portrait %then %let rpt_output_delayed_files = &rpt_output_delayed_files &outfile;
-    %else %let rpt_output_delayed_files = &rpt_output_delayed_files &outfile#;
-    ods document name = &outfile(write);
-  %end;
-  %else %do;
-    %if &outfmt = rtf %then ods rtf file = "&outfile..rtf" style = &style bodytitle;
-    %else %if &outfmt = xls %then ods tagsets.excelxp file = "&outfile..xls" style = &style;;
-  %end;
-  ods escapechar = '^';
-
-  proc report data = outdata contents = ''
-    nowd split = '|' headline style(report) = [outputwidth = 100%];
-    %let rpt_colvlst = fid sid tid rwtype varstr;
-    %do i = 1 %to &rpt_coln;
-      %let rpt_colvlst = &rpt_colvlst &&rpt_colv&i;
-    %end;
-    %if &rpt_pcol %then %let rpt_colvlst = &rpt_colvlst rpt_col_pval;
-    %if &rpt_tcol %then %let rpt_colvlst = &rpt_colvlst rpt_col_total;
-    column &rpt_colvlst;
-
-    define fid / order noprint;
-    define sid / order noprint;
-    define tid / order noprint;
-    define rwtype / display noprint;
-    define varstr / 'Characteristic' style = [just = left] width = &m_size;
-    %do i = 1 %to &rpt_coln;
-      define &&rpt_colv&i / "&&rpt_colvlbl&i" style = [just = right] width = &c_size;
-    %end;
-    %if &rpt_pcol %then define rpt_col_pval / 'P Value' style = [just = right] width = &p_size;;
-    %if &rpt_tcol %then define rpt_col_total / "&rpt_tcollbl" style = [just = right] width = &c_size;;
-
-    compute varstr;
-      if rwtype = 0 then varstr = prxchange(&regex, 1, strip(varstr));
-      else if rwtype in (1: 3) then varstr = cat(repeat('  ', rwtype - 1), prxchange(&regex, 1, strip(varstr)));
-      if rwtype in (0: 3) then call define(_col_, 'style/merge', cats('style = [leftmargin = ', 18 * rwtype, 'pt]'));
-      else if rwtype = -1 then do;
-        call define(_col_, 'style/merge', 'style = [font_weight = bold just = center]');
-        call define(_row_, 'style/merge', 'style = [borderbottomstyle = solid borderbottomwidth = 1pt]');
-      end;
-      else if rwtype = -2 then do;
-        call define(_col_, 'style/merge', 'style = [font_style = italic just = center]');
-      end;
-    endcomp;
-    %if &rpt_pcol or &rpt_ncol or &footer ~= %then %do;
-      compute after _page_ / style = [just = left font = fonts('FootFont')];
-        %if &rpt_pcol %then line &pfooter;;
-        %if &rpt_ncol %then %do l = 1 %to &nnfooter;
-          line &&nfooter&l;
-        %end;
-        %if &footer ~= %then line &footer;;
-      endcomp;
-    %end;
-
-    %if &mask %then %do;
-      %let mask_colvlst = ;
-      %do i = 1 %to &rpt_coln;
-        %let mask_colvlst = &mask_colvlst &&rpt_colv&i;
-      %end;
-      %if &rpt_pcol %then %let mask_colvlst = &mask_colvlst rpt_col_pval;
-      %if &rpt_tcol %then %let mask_colvlst = &mask_colvlst rpt_col_total;
-      %let n_mask_colv = %sysfunc(countw(&mask_colvlst, %str( )));
-      %do i = 1 %to &n_mask_colv;
-        %let mask_colv = %scan(&mask_colvlst, &i, %str( ));
-        compute &mask_colv;
-          &mask_colv = prxchange('s/\d/x/', -1, &mask_colv);
-        endcomp;
-      %end;
-    %end;
-
-    break before fid / contents = '' page;
-  run;
-
-  %if &delay %then ods document close;
-  %else %if &outfmt = rtf %then ods rtf close;
-  %else %if &outfmt = xls %then ods tagsets.excelxp close;;
-
-  title;
-  options &opt_save;
+		  %let m_size = 40; %* Define the size of left margin;
+		  %let c_size = 20; %* Define the size of each column;
+		  %let p_size =  8; %* Define the size of test column;
+		
+		  %let ls = %eval(4 + &m_size + &rpt_coln * (4 + &c_size));
+		  %if &rpt_pcol %then %let ls = %eval(&ls + 4 + &p_size);
+		  %if &rpt_tcol %then %let ls = %eval(&ls + 4 + &c_size);
+		  %if &ls < 64 %then %let ls = 64;
+		  %else %if &ls > 256 %then %let ls = 256;
+		  %let ps = %eval(4 + &nlines);
+		  %if &rpt_pcol %then %let ps = %eval(&ps + 1);
+		  %if &rpt_ncol %then %let ps = %eval(&ps + &nnfooter);
+		  %if &footer ~= %then %let ps = %eval(&ps + 1);
+		  %if &ps < 15 %then %let ps = 15;
+		  %else %if &ps > 32767 %then %let ps = 32767;
+		  %let opt_save = %sysfunc(getoption(orientation, keyword))
+		  %sysfunc(getoption(linesize, keyword)) %sysfunc(getoption(pagesize, keyword));
+		  options orientation = &orientation ls = &ls ps = &ps label number;
+		
+		  title &title;
+		  ods proclabel &title;
+		  %if &delay %then %do;
+		    %let rpt_fid = %eval(&rpt_fid + 1);
+		    %do %while(%sysfunc(prxmatch(%str(/\b&outfile#?\b/i), &rpt_output_delayed_files)));
+		      %if %sysfunc(prxmatch(%str(/\d+$/), &outfile)) %then %do;
+		        %let outfilepre = %sysfunc(prxchange(%str(s/^(\w+?)\d+$/$1/), 1, &outfile));
+		        %let outfileext = %eval(%sysfunc(prxchange(%str(s/^\w+?(\d+)$/$1/), 1, &outfile)) + 1);
+		      %end;
+		      %else %do;
+		        %let outfilepre = &outfile;
+		        %let outfileext = 1;
+		      %end;
+		      %let outfile = &outfilepre&outfileext;
+		    %end;
+		    %if &orientation = portrait %then %let rpt_output_delayed_files = &rpt_output_delayed_files &outfile;
+		    %else %let rpt_output_delayed_files = &rpt_output_delayed_files &outfile#;
+		    ods document name = &outfile(write);
+		  %end;
+		  %else %do;
+		    %if &outfmt = rtf %then ods rtf file = "&outfile..rtf" style = &style bodytitle;
+		    %else %if &outfmt = xls %then ods tagsets.excelxp file = "&outfile..xls" style = &style;;
+		  %end;
+		  ods escapechar = '^';
+		
+		
+		  proc report data = outdata contents = ''
+		    nowd split = '|' headline style(report) = [outputwidth = 100%];
+		    %let rpt_colvlst = fid sid tid rwtype varstr;
+		    %do i = 1 %to &rpt_coln;
+		      %let rpt_colvlst = &rpt_colvlst &&rpt_colv&i;
+		    %end;
+		    %if &rpt_pcol %then %let rpt_colvlst = &rpt_colvlst rpt_col_pval;
+		    %if &rpt_tcol %then %let rpt_colvlst = &rpt_colvlst rpt_col_total;
+		    column &rpt_colvlst;
+		
+		    define fid / order noprint;
+		    define sid / order noprint;
+		    define tid / order noprint;
+		    define rwtype / display noprint;
+		    define varstr / 'Characteristic' style = [just = left] width = &m_size;
+		    %do i = 1 %to &rpt_coln;
+		      define &&rpt_colv&i / "&&rpt_colvlbl&i" style = [just = right] width = &c_size;
+		    %end;
+		    %if &rpt_pcol %then define rpt_col_pval / 'P Value' style = [just = right] width = &p_size;;
+		    %if &rpt_tcol %then define rpt_col_total / "&rpt_tcollbl" style = [just = right] width = &c_size;;
+		
+		    compute varstr;
+		      if rwtype = 0 then varstr = prxchange(&regex, 1, strip(varstr));
+		      else if rwtype in (1: 3) then varstr = cat(repeat('  ', rwtype - 1), prxchange(&regex, 1, strip(varstr)));
+		      if rwtype in (0: 3) then call define(_col_, 'style/merge', cats('style = [leftmargin = ', 18 * rwtype, 'pt]'));
+		      else if rwtype = -1 then do;
+		        call define(_col_, 'style/merge', 'style = [font_weight = bold just = center]');
+		        call define(_row_, 'style/merge', 'style = [borderbottomstyle = solid borderbottomwidth = 1pt]');
+		      end;
+		      else if rwtype = -2 then do;
+		        call define(_col_, 'style/merge', 'style = [font_style = italic just = center]');
+		      end;
+		    endcomp;
+		    %if &rpt_pcol or &rpt_ncol or &footer ~= %then %do;
+		      compute after _page_ / style = [just = left font = fonts('FootFont')];
+		        %if &rpt_pcol %then line &pfooter;;
+		        %if &rpt_ncol %then %do l = 1 %to &nnfooter;
+		          line &&nfooter&l;
+		        %end;
+		        %if &footer ~= %then line &footer;;
+		      endcomp;
+		    %end;
+		
+		    %if &mask %then %do;
+		      %let mask_colvlst = ;
+		      %do i = 1 %to &rpt_coln;
+		        %let mask_colvlst = &mask_colvlst &&rpt_colv&i;
+		      %end;
+		      %if &rpt_pcol %then %let mask_colvlst = &mask_colvlst rpt_col_pval;
+		      %if &rpt_tcol %then %let mask_colvlst = &mask_colvlst rpt_col_total;
+		      %let n_mask_colv = %sysfunc(countw(&mask_colvlst, %str( )));
+		      %do i = 1 %to &n_mask_colv;
+		        %let mask_colv = %scan(&mask_colvlst, &i, %str( ));
+		        compute &mask_colv;
+		          &mask_colv = prxchange('s/\d/x/', -1, &mask_colv);
+		        endcomp;
+		      %end;
+		    %end;
+		
+		    break before fid / contents = '' page;
+		  run;
+		
+		  %if &delay %then ods document close;
+		  %else %if &outfmt = rtf %then ods rtf close;
+		  %else %if &outfmt = xls %then ods tagsets.excelxp close;;
+		
+		  title;
+		  options &opt_save;
+		  	  
+	%end;
   %rptreset();
+  
+%if &genrpt %then endsas;;
+  
 %mend;
 
 %macro export_listing(
