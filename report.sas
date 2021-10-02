@@ -1557,11 +1557,6 @@
     table &subgrp / &missopt out = total_subfreqtab; %* Overall;
   run;
 
-	/*test*/
-	ods excel file = "/data/home/hwang2/projectcache/tk/example.xlsx" options(frozen_headers="1" frozen_rowheaders="1" sheet_name="");
-	/*p1*/proc print data = subfreqtab_o;
-	/*p2*/proc print data = total_subfreqtab;
-
 	/*2021-08-03 HW*/
   proc freq data = init_pt noprint;
     table &strata / sparse &missopt out = stratabypt;
@@ -1608,12 +1603,6 @@
 			left join stratabypt_female as f on a.&strata=f.&strata;
 			quit;
 
-			/*testing*/
-			/*p3*/proc print data = freqtab&i._o;
-			/*p4*/proc print data = total_freqtab&i;
-			/*p5*/proc print data = freqtab&i;
-
-
       proc sort data = freqtab&i; by &subgrp &var;
       proc sort data = total_freqtab&i; by &subgrp &var;
       	  	
@@ -1622,9 +1611,7 @@
         by &subgrp &var;
         if in_total;
       run;
-      
- 			/*p6*/proc print data = freqtab&i;     
-      
+    
     %end;
     
     %else %do;
@@ -1688,10 +1675,6 @@
         col_idlabel = strip(vvalue(&strata));
       end;
     run;
-
-		/*test*/
-		/*p7*/proc print data = freqtab_result&i;
-		endsas;
 
     /*2021-08-04 HW: add sort by count (not percent) in specific column*/
     %if &sortref ~= %then %do;
@@ -2008,13 +1991,23 @@
 		proc sort data=frame_lv3 nodup;
 			by &subgrp &var &strata &lv3var;
 		run;
-		 
+		
+		/*2021-10-02 HW: frame for strata, subgrp and lv3 variable (Treatment arm, AEBODSYS and Severity*/
+		proc sort data=frame_lv3 out=frame_lv2 (keep = &subgrp &strata &lv3var) nodupkey;
+			where not missing(&subgrp);
+			by &subgrp &strata &lv3var;
+		run;
+		
     %if &colpct and not &pctbysub %then %do;
     	 	
       proc freq data = init noprint;
         table &strata * &subgrp * &var / outpct &missopt missprint out = freqtab&i._o(drop = percent);
         table &strata * &subgrp * &var * &lv3var / outpct &missopt missprint out = freqtablv3&i._o(drop = percent);
       run;
+
+      proc freq data = init_nodupsub noprint;
+        table &strata * &subgrp * &lv3var / outpct &missopt missprint out = freqtablv13&i._o(drop = percent);
+      run;			
 
 			proc sql; 
 			create table freqtab&i as 
@@ -2041,6 +2034,21 @@
 			left join stratabypt_male as m on a.&strata=m.&strata
 			left join stratabypt_female as f on a.&strata=f.&strata
 			full outer join frame_lv3 as fr on a.&var=fr.&var and a.&strata=fr.&strata and a.&subgrp=fr.&subgrp and a.&lv3var=fr.&lv3var;
+			
+			create table freqtablv13&i as 
+			select coalesce(a.&strata, fr.&strata) as &strata,
+						 coalesce(a.&subgrp, fr.&subgrp) as &subgrp,
+						 coalesce(a.&lv3var, fr.&lv3var) as &lv3var,
+						 a.*, 
+						 100*a.count/b.count as percent,
+						 100*a.count/m.count as percent_male,
+						 100*a.count/f.count as percent_female
+			from freqtablv13&i._o as a 
+			left join stratabypt as b on a.&strata=b.&strata
+			left join stratabypt_male as m on a.&strata=m.&strata
+			left join stratabypt_female as f on a.&strata=f.&strata
+			full outer join frame_lv2 as fr on a.&strata=fr.&strata and a.&subgrp=fr.&subgrp and a.&lv3var=fr.&lv3var;
+			
 			quit;
    	 
    	  /*Fill lv3 dataset (merged with frame) empty cells with 0*/
@@ -2049,6 +2057,14 @@
    	  	array msl3{*} count pct_tabl pct_row pct_col percent percent_male percent_female; 
    	  	do i=1 to dim(msl3); 
    	  	   if missing(msl3{i}) then msl3{i}=0;
+   	  	end;
+   	  run;
+
+   	  data freqtablv13&i;
+   	  	set freqtablv13&i;
+   	  	array msl13{*} count pct_tabl pct_row pct_col percent percent_male percent_female; 
+   	  	do i=1 to dim(msl13); 
+   	  	   if missing(msl13{i}) then msl13{i}=0;
    	  	end;
    	  run;
    	  
@@ -2065,24 +2081,20 @@
    	  data freqtablv3&i;
    	  	set freqtablv3&i.b;
    	  run;
-   	  
-   	  
-      /*test*/
-**      ods excel file = "/data/home/hwang2/projectcache/tk/sev testing.xlsx" options(frozen_headers="1" frozen_rowheaders="1" sheet_name="");
-** 			proc sort data = freqtab&i._o;
-**				by aedecod aebodsys trtgp;     
-**			/*print1*/proc print data = freqtab&i._o;
-** 			proc sort data = freqtablv3&i._o;
-**				by aedecod aebodsys trtgp areln; 
-**			/*print2*/proc print data = freqtablv3&i._o;				
-** 			proc sort data = frame_lv3;
-**				by aedecod trtgp areln;    				
-**			/*print3*/proc print data = frame_lv3;
-**			proc sort data = freqtab&i;
-**				by aedecod aebodsys trtgp;
-**			/*print4*/proc print data = freqtab&i;
-** 			/*print5*/proc print data = freqtablv3&i;
- 				   
+
+   	  proc sql;
+   	  	create table ftlv13ptsum as
+   	  		select &subgrp, &strata, sum(count) as ptsum
+   	  		from freqtablv13&i group by &subgrp, &strata;
+   	  	create table freqtablv13&i.b as
+   	  		select a.*, b.ptsum
+   	  		from freqtablv13&i as a
+   	  		left join ftlv13ptsum as b on a.&subgrp = b.&subgrp and a.&strata = b.&strata;
+   	  quit;
+   	  data freqtablv13&i;
+   	  	set freqtablv13&i.b;
+   	  run;   	  
+   	  		   
     %end;
      
     %else %do;
@@ -2096,7 +2108,7 @@
 
 
     data freqtab_result&i;
-      set header(where = (_type_ = 1) in = in_header) subfreqtab(in = in_sub) freqtab&i(in = in_freq) freqtablv3&i(in = in_lv3);
+      set header(where = (_type_ = 1) in = in_header) subfreqtab(in = in_sub) freqtab&i(in = in_freq) freqtablv3&i(in = in_lv3) freqtablv13&i(in = in_lv13);
 
       length col_id result $ 60 col_idlabel varstr $ 250;
       
@@ -2111,7 +2123,7 @@
 			if in_sub then in_subfl=1;
 			if in_freq then in_freqfl=1;
 			if in_lv3 then in_lv3fl=1;
-
+			if in_lv13 then in_lv13fl=1;
 
       if in_header then do;
         rwtype = 0;
@@ -2161,14 +2173,6 @@
       end;
     run;
 
-		/*test*/
-		proc sort data=freqtab_result&i;
-			by aebodsys aedecod trtgp areln;
-		run;
-		/*print6*/proc print data = freqtab_result&i;
-
-
-
     /*2021-08-04 HW: add sort by count (not percent) in specific column*/
     %if &sortref ~= %then %do;
     	%let nsortvarlst = %sysfunc(countw(&sortref));
@@ -2190,8 +2194,8 @@
 			    data freqtab_result&i;
 			    	merge freqtab_result&i freqtab_result&i._ref&sortval;
 			    	by rwtype &subgrp &var varstr;
-			    	/*2021-10-02 HW: if a row doesn't exist, count will be missing after merge*/
-			    	if rwtype = 2 and missing(count_ref&sortval) then count_ref&sortval = 0;   			    	
+			    	/*2021-10-02 HW: if a row doesn't exist, count will be missing after merge, set to 0 for rows that has valid &var (not for lv1 vs. lv3 rows)*/
+			    	if rwtype = 2 and not missing(&var) and missing(count_ref&sortval) then count_ref&sortval = 0;   			    	
 			    run;     
 			    
 			%end;
@@ -2216,8 +2220,6 @@
 		    run;
 	  %end;
 
-		/*print6b*/proc print data = freqtab_result&i;
-
     proc transpose data = freqtab_result&i out = freqtab_bystrata&i(drop = _name_);
       by rwtype &subgrp %if &sortref ~= %then &sortval_agg; &var &lv3var varstr;
       id col_id;
@@ -2225,12 +2227,17 @@
       var result;
     run;
 		
+		/*2021-10-02 HW: fill empty cells with 0*/
+		data freqtab_bystrata&i;
+			set freqtab_bystrata&i;
+			array msr{*} rpt_col:; 
+			do i=1 to dim(msr); 
+			   if missing(msr{i}) then msr{i}="0 ("||strip(put(0, &format))||")"; 
+			end;
+		
     proc sort data = freqtab_bystrata&i;
       by rwtype &subgrp &var varstr;		
 		run;
-		
-		/*print7*/proc print data = freqtab_bystrata&i;
-**		endsas;
 		
     %if &hidesub ~= or &foldsub ~= or &foldemptysub %then %do;
       proc sql noprint;
