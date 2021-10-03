@@ -2115,7 +2115,7 @@
     data freqtab_result&i;
       set header(where = (_type_ = 1) in = in_header) subfreqtab(in = in_sub) freqtab&i(in = in_freq) freqtablv3&i(in = in_lv3) freqtablv13&i(in = in_lv13);
 
-      length col_id result $ 60 col_idlabel varstr $ 250;
+      length col_id result $ 50 col_idlabel varstr $ 250;
       
       /*2021-08-03 HW: add gender specific percentage*/
       %if &gendersp %then %do;
