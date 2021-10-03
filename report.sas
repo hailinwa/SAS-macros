@@ -1915,8 +1915,14 @@
   run;
 
 	/*2021-08-03 HW: make sure each PT is counted once for each patient*/
-	proc sort data=init nodupkey;
-		by &pid &strata &subgrp &varlst;
+	/*2021-10-03 HW: keep PT record with highest level 3 variable value (severity etc.)*/
+	proc sort data=init;
+		by &strata &pid &subgrp &varlst &lv3var;
+	run;
+	data init (compress=binary);
+		set init;
+		by &strata &pid &subgrp &varlst &lv3var;
+		if last.&varlst;
 	run;
 	
 	/*2021-10-02 HW: keep most severe / highest level 3 var*/
