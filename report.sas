@@ -1919,6 +1919,11 @@
 		by &pid &strata &subgrp &varlst;
 	run;
 	
+	/*2021-10-02 HW: keep most severe / highest level 3 var*/
+	proc sort data=init;
+		by &pid &strata &subgrp descending &lv3var;
+	run;
+	
 	proc sort data=init out=init_nodupsub nodupkey;
 		by &pid &strata &subgrp;
 	run;
@@ -1969,7 +1974,7 @@
     %let var = %scan(&varlst, &i);
     
     /*2021-10-01 HW: create frame for all possible combination of LV3 (severity / relation etc.) variable*/
-		proc sql;
+		proc sql noprint;
 			create table frame as	select distinct &strata, &subgrp, &var from &indata;
 			/*All possible numeric values of strata (column)*/
 			select count(distinct &strata) into :ns trimmed from &indata;
@@ -2009,7 +2014,7 @@
         table &strata * &subgrp * &lv3var / outpct &missopt missprint out = freqtablv13&i._o(drop = percent);
       run;			
 
-			proc sql; 
+			proc sql nowarn; 
 			create table freqtab&i as 
 			select a.*, 
 						 100*a.count/b.count as percent,
