@@ -2226,8 +2226,16 @@
     %end;
 
     %else %do;
+	    	data freqtab_result&i;
+					set freqtab_result&i;
+					if not missing(&lv3var) then do;
+						varstr = put(&lv3var, &lv3var..);
+						rwtype = 3;
+					end;
+				run;
+    	
 		    proc sort data = freqtab_result&i;
-		      by rwtype &subgrp &var varstr;
+		      by rwtype &subgrp &var &lv3var varstr;
 		    run;
 	  %end;
 
