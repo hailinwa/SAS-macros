@@ -1207,7 +1207,7 @@
 	          	%end;
 	          %end;
         
-        missing(&var), &var;
+        missing(&var), lowcase(&var);
       quit;
     %end;
 
@@ -1845,7 +1845,7 @@
           	%end;
           %end;
           
-          ifn(rwtype > 1, 1, 0), missing(&var), &var;
+          ifn(rwtype > 1, 1, 0), missing(&var), lowcase(&var);
         quit;
       %end;
     %end;
@@ -2383,7 +2383,7 @@
           	%end;
           %end;
           
-          ifn(rwtype > 1, 1, 0), missing(&var), &var,
+          ifn(rwtype > 1, 1, 0), missing(&var), lowcase(&var),
           /*following two orders by level 3 term*/
           not missing(&lv3var), &lv3var;
         quit;
@@ -2930,9 +2930,12 @@
           else result = 'N/A';
         %end;
         %else %if &statkey = mean
-        or &statkey = median or &statkey = min or &statkey = max
-        or &statkey = p5 or &statkey = p25 or &statkey = p75 or &statkey = p95 %then %do;
+        or &statkey = median or &statkey = p5 or &statkey = p25 or &statkey = p75 or &statkey = p95 %then %do;
           if n > 0 then result = strip(put(&statkey, &format));
+          else result = 'N/A';
+        %end;
+        %else %if &statkey = min or &statkey = max %then %do;
+          if n > 0 then result = strip(put(&statkey, &mformat));
           else result = 'N/A';
         %end;
         %else %if &statkey = n_nmiss %then %do;
