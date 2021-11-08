@@ -4603,6 +4603,178 @@
   %rptpush(mfs_bystrata);
 %mend;
 
+%macro mmrm(
+  indata,           /* Input dataset */
+  strata,           /* Main group */
+  class, 						/* Class statement*/
+  model,   					/* specify MMRM model statement using %str()*/
+  where,						/* model selection*/
+  avisitn,					/* Analysis visit number to include in output*/
+  difflst,					/* Pairs of comparison (alternative|baseline), e.g. 1|2 3|5*/
+  modellbl,					/* Model label */
+  difflbl,					/* Pairwise comparison label*/
+  mformat = 8.1,    /* Format of the least square means */
+  sformat = 8.2,		/* Format of the SE*/
+  ciformat = 8.2		/* Format of the CI*/
+  );
+
+  %* Precheck the STRATA variable;
+  %if &rpt_sttvar = %then %do;
+    %let rpt_sttvar = &strata;
+    %let dsid = %sysfunc(open(&indata, i));
+    %let sttnum = %sysfunc(varnum(&dsid, &rpt_sttvar));
+    %let rpt_sttlbl = %qsysfunc(varlabel(&dsid, &sttnum));
+    %let rc = %sysfunc(close(&dsid));
+  %end;
+  %else %if &rpt_sttvar ne &strata %then %do;
+    %put ERROR: Changed main group variable;
+    %abort;
+  %end;
+
+	/*MMRM model*/
+	ods listing close;
+	proc mixed data=&indata (where=(&where));
+		ods output lsmeans=cache_lsm;
+		ods output diffs=cache_diff;
+	  class &class;
+	  model &model / ddfm = kr;
+	  repeated avisitn / type = un subject = subjid;
+	  lsmeans &strata * avisitn / bylevel diff cl alpha = 0.05;
+	run;
+	quit;
+	ods listing;
+	ods results;
+
+	/*Least square mean, 95% CI*/
+	data lsmeans1;
+	  length stat ci $30 avisit $200 pval $20;
+	  set cache_lsm;
+	  where avisitn = &avisitn;
+	  avisit = strip(put(avisitn, avisit.));
+	  stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
+	  if probt < .0001 then pval = "<0.0001";
+	  else pval = strip(put(probt, 8.4));
+	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
+		col_id = cats('rpt_col', &strata);
+		col_idlabel = strip(vvalue(&strata));
+	run;
+	proc sort data = lsmeans1;
+    by avisitn;
+  run;
+  proc transpose data = lsmeans1 out = mmrm_lsm_est(drop = _name_);
+    by avisitn;
+    id col_id;
+    idlabel col_idlabel;
+    var stat;
+  run;
+  proc transpose data = lsmeans1 out = mmrm_lsm_ci(drop = _name_);
+    by avisitn;
+    id col_id;
+    idlabel col_idlabel;
+    var ci;
+  run;
+
+	/*Count (n): cases with CHG not missing*/
+  proc means data = &indata noprint;
+  	where avisitn = &avisitn and &where;
+    class &strata;
+    id chg;
+    var chg;
+    output out = univar n = n;
+  run;
+  data univar_r;
+    set univar;
+    length col_id result $ 30 col_idlabel varstr $ 250;
+    if _type_ = 0 then delete;
+    varstr = "n";
+    result = strip(put(n, best8.));
+    col_id = cats('rpt_col', &strata);
+    col_idlabel = strip(vvalue(&strata));
+  run;
+  proc sort data = univar_r;
+    by varstr;
+  run;
+  proc transpose data = univar_r out = mmrm_lsm_cnt(drop = _name_);
+    by varstr;
+    id col_id;
+    idlabel col_idlabel;
+    var result;
+  run;
+  
+  /*MMRM pairwise difference*/
+  %let npairlst = %sysfunc(countw(%quote(&difflst), %str( )));
+  
+  data diff1;
+  	set cache_diff;
+  	length avisit $200;
+  	if avisitn = &avisitn and _avisitn = &avisitn;
+  	avisit = strip(put(avisitn, avisit.));
+  	
+  	stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
+	  if probt < .0001 then pval = "<0.0001";
+	  else pval = strip(put(probt, 8.4));
+	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
+	  
+		col_id = cats('rpt_col', _&strata);
+		col_idlabel = strip(vvalue(_&strata));
+		
+	  %do i = 1 %to &npairlst;
+	  	%let dfpair = %scan(%quote(&difflst), &i, %str( ));
+	    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
+	    %let bsl = %sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair));	
+	    if &strata = &alt and _&strata. = &bsl then output;
+		%end;
+  run;
+  
+	proc sort data = diff1;
+    by avisitn;
+  run;
+  proc transpose data = diff1 out = mmrm_dif_est(drop = _name_);
+    by avisitn;
+    id col_id;
+    idlabel col_idlabel;
+    var stat;
+  run;
+  proc transpose data = diff1 out = mmrm_dif_ci(drop = _name_);
+    by avisitn;
+    id col_id;
+    idlabel col_idlabel;
+    var ci;
+  run;
+  proc transpose data = diff1 out = mmrm_dif_pv(drop = _name_);
+    by avisitn;
+    id col_id;
+    idlabel col_idlabel;
+    var pval;
+  run;
+  
+  /*Combing all into output dataset*/
+  data lbl1;
+  	length varstr $250;
+  	varstr = "&modellbl";
+  run;
+  data lbl2;
+  	length varstr $250;
+  	varstr = "&difflbl";
+  run;  
+  data mmrm_lsm;
+  	retain varstr rpt_col:;
+  	set lbl1 
+  			mmrm_lsm_est (in=a) mmrm_lsm_ci (in=b) mmrm_lsm_cnt (in=c) 
+  			lbl2
+  			mmrm_dif_est (in=d) mmrm_dif_ci (in=e) mmrm_dif_pv (in=f);
+  	length varstr $250;
+  	if a then varstr = "Least Square Mean (SE)";
+  	if b or e then varstr = "95% CI";
+  	if d then varstr = "Difference (SE)";
+  	if f then varstr = "p-value";
+  	keep varstr rpt_col:;
+  run;
+
+  %rptpush(mmrm_lsm);
+  
+%mend;
+
 %macro export(
   outfile,                /* Output file name */
   title,                  /* Title of the table */
