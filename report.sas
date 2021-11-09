@@ -4709,15 +4709,35 @@
   	length avisit $200;
   	if avisitn = &avisitn and _avisitn = &avisitn;
   	avisit = strip(put(avisitn, avisit.));
-  	
+
   	stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
 	  if probt < .0001 then pval = "<0.0001";
 	  else pval = strip(put(probt, 8.4));
 	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
-	  
+
 		col_id = cats('rpt_col', _&strata);
 		col_idlabel = strip(vvalue(_&strata));
-		
+	  
+	  /*create reverse estimate*/
+		output;
+			/*swap comparing treatment arm*/
+		  &strata.d = &strata;
+			&strata = _&strata.d;
+		  _&strata.d = _&strata;
+			_&strata = &strata.d;
+			/*est = -est; lower = -upper; upper = -lower*/
+	  	stat = strip(put(estimate*(-1), &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
+		  if probt < .0001 then pval = "<0.0001";
+		  else pval = strip(put(probt, 8.4));
+		  ci = '(' || strip(put(upper*(-1), &ciformat)) || ', ' || strip(put(lower*(-1), &ciformat)) || ')';
+		  
+		  col_id = cats('rpt_col', _&strata);
+			col_idlabel = strip(vvalue(_&strata));
+		  output;
+	run;
+
+	data diff1;
+		set diff1;
 	  %do i = 1 %to &npairlst;
 	  	%let dfpair = %scan(%quote(&difflst), &i, %str( ));
 	    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
