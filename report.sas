@@ -4610,9 +4610,15 @@
   model,   					/* specify MMRM model statement using %str()*/
   where,						/* model selection*/
   avisitn,					/* Analysis visit number to include in output*/
-  difflst,					/* Pairs of comparison (alternative|baseline), e.g. 1|2 3|5*/
   modellbl,					/* Model label */
-  difflbl,					/* Pairwise comparison label*/
+  difflst = ,				/* Pairs of comparison, e.g. 1|2 3|5*/
+  difflbl = ,				/* Pairwise comparison label*/
+  difflst2 = ,			/* 2nd row of comparison*/
+ 	difflbl2 = ,			/* 2nd row of comparison label*/
+  difflst3 = ,			/* 3rd row of comparison*/
+ 	difflbl3 = ,			/* 3rd row of comparison label*/
+ 	pwdisp = b,				/* Display pairwise comparison in baseline (b) or 
+  										 alternative (a) column*/
   mformat = 8.1,    /* Format of the least square means */
   sformat = 8.2,		/* Format of the SE*/
   ciformat = 8.2		/* Format of the CI*/
@@ -4635,15 +4641,19 @@
 	ods listing close;
 	proc mixed data=&indata (where=(&where));
 		ods output lsmeans=cache_lsm;
-		ods output diffs=cache_diff;
+		ods output /*slice*/diffs=cache_diff;
+		ods output convergencestatus=convg;
 	  class &class;
-	  model &model / ddfm = kr;
+	  model &model /*/ ddfm = kr*/;
 	  repeated avisitn / type = un subject = subjid;
 	  lsmeans &strata * avisitn / bylevel diff cl alpha = 0.05;
+**	  slice &strata * avisitn / sliceby(avisitn="&avisitn") PDiff CL;
 	run;
 	quit;
 	ods listing;
 	ods results;
+
+**	proc print data = convg;
 
 	/*Least square mean, 95% CI*/
 	data lsmeans1;
@@ -4702,9 +4712,7 @@
   run;
   
   /*MMRM pairwise difference*/
-  %let npairlst = %sysfunc(countw(%quote(&difflst), %str( )));
-  
-  data diff1;
+  data difftot;
   	set cache_diff;
   	length avisit $200;
   	if avisitn = &avisitn and _avisitn = &avisitn;
@@ -4715,29 +4723,33 @@
 	  else pval = strip(put(probt, 8.4));
 	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
 
-		col_id = cats('rpt_col', _&strata);
-		col_idlabel = strip(vvalue(_&strata));
-	  
+		
+		col_id = cats('rpt_col', %if &pwdisp = b %then _&strata; %else &strata;);
+		col_idlabel = strip(vvalue(%if &pwdisp = b %then _&strata; %else &strata;));
+
 	  /*create reverse estimate*/
 		output;
 			/*swap comparing treatment arm*/
 		  &strata.d = &strata;
+			_&strata.d = _&strata;
 			&strata = _&strata.d;
-		  _&strata.d = _&strata;
 			_&strata = &strata.d;
+			
 			/*est = -est; lower = -upper; upper = -lower*/
 	  	stat = strip(put(estimate*(-1), &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
 		  if probt < .0001 then pval = "<0.0001";
 		  else pval = strip(put(probt, 8.4));
 		  ci = '(' || strip(put(upper*(-1), &ciformat)) || ', ' || strip(put(lower*(-1), &ciformat)) || ')';
 		  
-		  col_id = cats('rpt_col', _&strata);
-			col_idlabel = strip(vvalue(_&strata));
+		  col_id = cats('rpt_col', %if &pwdisp = b %then _&strata; %else &strata;);
+			col_idlabel = strip(vvalue(%if &pwdisp = b %then _&strata; %else &strata;));
 		  output;
 	run;
 
+
+  %let npairlst = %sysfunc(countw(%quote(&difflst), %str( )));
 	data diff1;
-		set diff1;
+		set difftot;
 	  %do i = 1 %to &npairlst;
 	  	%let dfpair = %scan(%quote(&difflst), &i, %str( ));
 	    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
@@ -4745,7 +4757,6 @@
 	    if &strata = &alt and _&strata. = &bsl then output;
 		%end;
   run;
-  
 	proc sort data = diff1;
     by avisitn;
   run;
@@ -4768,26 +4779,111 @@
     var pval;
   run;
   
+  %if "&difflst2" NE "" %then %do;
+		  %let npairlst2 = %sysfunc(countw(%quote(&difflst2), %str( )));
+			data diff2;
+				set difftot;
+			  %do i = 1 %to &npairlst2;
+			  	%let dfpair = %scan(%quote(&difflst2), &i, %str( ));
+			    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
+			    %let bsl = %sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair));	
+			    if &strata = &alt and _&strata. = &bsl then output;
+				%end;
+		  run;
+			proc sort data = diff2;
+		    by avisitn;
+		  run;
+		  proc transpose data = diff2 out = mmrm_dif_est2(drop = _name_);
+		    by avisitn;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var stat;
+		  run;
+		  proc transpose data = diff2 out = mmrm_dif_ci2(drop = _name_);
+		    by avisitn;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var ci;
+		  run;
+		  proc transpose data = diff2 out = mmrm_dif_pv2(drop = _name_);
+		    by avisitn;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var pval;
+		  run;
+		  data lbl2;
+		  	length varstr $250;
+		  	varstr = "&difflbl2";
+		  run; 	
+  %end;
+  
+  %if "&difflst3" NE "" %then %do;
+		  %let npairlst3 = %sysfunc(countw(%quote(&difflst3), %str( )));
+			data diff3;
+				set difftot;
+			  %do i = 1 %to &npairlst3;
+			  	%let dfpair = %scan(%quote(&difflst3), &i, %str( ));
+			    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
+			    %let bsl = %sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair));	
+			    if &strata = &alt and _&strata. = &bsl then output;
+				%end;
+		  run;
+			proc sort data = diff3;
+		    by avisitn;
+		  run;
+		  proc transpose data = diff3 out = mmrm_dif_est3(drop = _name_);
+		    by avisitn;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var stat;
+		  run;
+		  proc transpose data = diff3 out = mmrm_dif_ci3(drop = _name_);
+		    by avisitn;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var ci;
+		  run;
+		  proc transpose data = diff3 out = mmrm_dif_pv3(drop = _name_);
+		    by avisitn;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var pval;
+		  run;  	
+		  data lbl3;
+		  	length varstr $250;
+		  	varstr = "&difflbl3";
+		  run; 	
+  %end; 
+  
   /*Combing all into output dataset*/
-  data lbl1;
+  data lblm;
   	length varstr $250;
   	varstr = "&modellbl";
   run;
-  data lbl2;
+  data lbl1;
   	length varstr $250;
   	varstr = "&difflbl";
   run;  
   data mmrm_lsm;
   	retain varstr rpt_col:;
-  	set lbl1 
+  	set lblm 
   			mmrm_lsm_est (in=a) mmrm_lsm_ci (in=b) mmrm_lsm_cnt (in=c) 
+  			lbl1
+  			mmrm_dif_est (in=d) mmrm_dif_ci (in=e) mmrm_dif_pv (in=f)
+  			%if "&difflst2" NE "" %then %do;
   			lbl2
-  			mmrm_dif_est (in=d) mmrm_dif_ci (in=e) mmrm_dif_pv (in=f);
+  			mmrm_dif_est2 (in=d2) mmrm_dif_ci2 (in=e2) mmrm_dif_pv2 (in=f2)  				
+  			%end;
+  			%if "&difflst3" NE "" %then %do;
+  			lbl3
+  			mmrm_dif_est3 (in=d3) mmrm_dif_ci3 (in=e3) mmrm_dif_pv3 (in=f3)  				
+  			%end;
+  			;
   	length varstr $250;
   	if a then varstr = "Least Square Mean (SE)";
-  	if b or e then varstr = "95% CI";
-  	if d then varstr = "Difference (SE)";
-  	if f then varstr = "p-value";
+  	if b or e or e2 or e3 then varstr = "95% CI";
+  	if d or d2 or d3 then varstr = "Difference (SE)";
+  	if f or f2 or f3 then varstr = "p-value";
   	keep varstr rpt_col:;
   run;
 
