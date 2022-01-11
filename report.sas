@@ -4621,7 +4621,8 @@
   										 alternative (a) column*/
   mformat = 8.1,    /* Format of the least square means */
   sformat = 8.2,		/* Format of the SE*/
-  ciformat = 8.2		/* Format of the CI*/
+  ciformat = 8.2,		/* Format of the CI*/
+  pformat = 8.3			/* Format of the p-value*/
   );
 
   %* Precheck the STRATA variable;
@@ -4663,7 +4664,7 @@
 	  avisit = strip(put(avisitn, avisit.));
 	  stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
 	  if probt < .0001 then pval = "<0.0001";
-	  else pval = strip(put(probt, 8.4));
+	  else pval = strip(put(probt, &pformat));
 	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
 		col_id = cats('rpt_col', &strata);
 		col_idlabel = strip(vvalue(&strata));
@@ -4720,7 +4721,7 @@
 
   	stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
 	  if probt < .0001 then pval = "<0.0001";
-	  else pval = strip(put(probt, 8.4));
+	  else pval = strip(put(probt, &pformat));
 	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
 
 		
@@ -4738,7 +4739,7 @@
 			/*est = -est; lower = -upper; upper = -lower*/
 	  	stat = strip(put(estimate*(-1), &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
 		  if probt < .0001 then pval = "<0.0001";
-		  else pval = strip(put(probt, 8.4));
+		  else pval = strip(put(probt, &pformat));
 		  ci = '(' || strip(put(upper*(-1), &ciformat)) || ', ' || strip(put(lower*(-1), &ciformat)) || ')';
 		  
 		  col_id = cats('rpt_col', %if &pwdisp = b %then _&strata; %else &strata;);
