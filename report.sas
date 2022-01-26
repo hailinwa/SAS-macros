@@ -4619,6 +4619,7 @@
  	difflbl3 = ,			/* 3rd row of comparison label*/
  	pwdisp = b,				/* Display pairwise comparison in baseline (b) or 
   										 alternative (a) column*/
+  lsmcnt = 0,				/* if to display count for LSM model*/
   mformat = 8.1,    /* Format of the least square means */
   sformat = 8.2,		/* Format of the SE*/
   ciformat = 8.2,		/* Format of the CI*/
@@ -4868,7 +4869,8 @@
   data mmrm_lsm;
   	retain varstr rpt_col:;
   	set lblm 
-  			mmrm_lsm_est (in=a) mmrm_lsm_ci (in=b) mmrm_lsm_cnt (in=c) 
+  			mmrm_lsm_est (in=a) mmrm_lsm_ci (in=b) 
+  			%if &lsmcnt ^= 0 %then mmrm_lsm_cnt (in=c);
   			lbl1
   			mmrm_dif_est (in=d) mmrm_dif_ci (in=e) mmrm_dif_pv (in=f)
   			%if "&difflst2" NE "" %then %do;
