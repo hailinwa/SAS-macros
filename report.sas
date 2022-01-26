@@ -4664,7 +4664,7 @@
 	  where avisitn = &avisitn;
 	  avisit = strip(put(avisitn, avisit.));
 	  stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
-	  if probt < .0001 then pval = "<0.0001";
+	  if probt < .001 then pval = "<0.001";
 	  else pval = strip(put(probt, &pformat));
 	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
 		col_id = cats('rpt_col', &strata);
@@ -4721,7 +4721,7 @@
   	avisit = strip(put(avisitn, avisit.));
 
   	stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
-	  if probt < .0001 then pval = "<0.0001";
+	  if probt < .001 then pval = "<0.001";
 	  else pval = strip(put(probt, &pformat));
 	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
 
@@ -4739,7 +4739,7 @@
 			
 			/*est = -est; lower = -upper; upper = -lower*/
 	  	stat = strip(put(estimate*(-1), &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
-		  if probt < .0001 then pval = "<0.0001";
+		  if probt < .001 then pval = "<0.001";
 		  else pval = strip(put(probt, &pformat));
 		  ci = '(' || strip(put(upper*(-1), &ciformat)) || ', ' || strip(put(lower*(-1), &ciformat)) || ')';
 		  
