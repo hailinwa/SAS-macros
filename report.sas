@@ -1,5 +1,5 @@
 /* Author: Zhen-Huan (Kenny) Hu <zhu@mcw.edu>
-/*				 Hai-Lin Wang <hwang@mcw.edu>
+/*		   Hai-Lin Wang <hwang@mcw.edu>
 /* Last change: 2020-12-08
 /*
 /* Fucntions and their basic uses:
@@ -4891,6 +4891,618 @@
   run;
 
   %rptpush(mmrm_lsm);
+  
+%mend;
+
+%macro ancova(
+  indata,           /* Input dataset */
+  strata,           /* Main group */
+  class, 						/* Class statement*/
+  model,   					/* specify ANCOVA model statement using %str()*/
+  where,						/* model selection*/
+  /*avisitn,					 Analysis visit number to include in output*/
+  modellbl,					/* Model label */
+  difflst = ,				/* Pairs of comparison, e.g. 1|2 3|5*/
+  difflbl = ,				/* Pairwise comparison label*/
+  difflst2 = ,			/* 2nd row of comparison*/
+ 	difflbl2 = ,			/* 2nd row of comparison label*/
+  difflst3 = ,			/* 3rd row of comparison*/
+ 	difflbl3 = ,			/* 3rd row of comparison label*/
+ 	pwdisp = b,				/* Display pairwise comparison in baseline (b) or 
+  										 alternative (a) column*/
+  lsmcnt = 0,				/* if to display LSM model count */
+  mformat = 8.1,    /* Format of the least square means */
+  sformat = 8.2,		/* Format of the SE*/
+  ciformat = 8.2,		/* Format of the CI*/
+  pformat = 8.3			/* Format of the p-value*/
+  );
+
+  %* Precheck the STRATA variable;
+  %if &rpt_sttvar = %then %do;
+    %let rpt_sttvar = &strata;
+    %let dsid = %sysfunc(open(&indata, i));
+    %let sttnum = %sysfunc(varnum(&dsid, &rpt_sttvar));
+    %let rpt_sttlbl = %qsysfunc(varlabel(&dsid, &sttnum));
+    %let rc = %sysfunc(close(&dsid));
+  %end;
+  %else %if &rpt_sttvar ne &strata %then %do;
+    %put ERROR: Changed main group variable;
+    %abort;
+  %end;
+
+	/*ANCOVA model*/
+	ods listing close;
+	proc mixed data=&indata (where=(&where));
+		ods output lsmeans=cache_lsm;
+		ods output diffs=cache_diff;
+	  class &class;
+	  model &model / ddfm = kr;
+	  lsmeans &strata / diff cl alpha = 0.05;
+	run;
+	quit;
+	ods listing;
+	ods results;
+
+	/*Least square mean, 95% CI*/
+	data lsmeans1;
+	  length stat ci $30 avisit $200 pval $20;
+	  set cache_lsm;
+**	  where avisitn = &avisitn;
+**	  avisit = strip(put(avisitn, avisit.));
+		ord = 1;
+	  stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
+	  if probt < .001 then pval = "<0.001";
+	  else if probt > 0.999 then pval = ">0.999";
+	  else pval = strip(put(probt, &pformat));
+	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
+		col_id = cats('rpt_col', &strata);
+		col_idlabel = strip(vvalue(&strata));
+	run;
+	
+	proc sort data = lsmeans1;
+    by ord;
+  run;
+  proc transpose data = lsmeans1 out = ancova_lsm_est(drop = _name_);
+    by ord;
+    id col_id;
+    idlabel col_idlabel;
+    var stat;
+  run;
+  proc transpose data = lsmeans1 out = ancova_lsm_ci(drop = _name_);
+    by ord;
+    id col_id;
+    idlabel col_idlabel;
+    var ci;
+  run;
+
+	/*Count (n): cases with CHG not missing*/
+  proc means data = &indata noprint;
+  	where &where;
+    class &strata;
+    id chg;
+    var chg;
+    output out = univar n = n;
+  run;
+  data univar_r;
+    set univar;
+    length col_id result $ 30 col_idlabel varstr $ 250;
+    if _type_ = 0 then delete;
+    varstr = "n";
+    result = strip(put(n, best8.));
+    col_id = cats('rpt_col', &strata);
+    col_idlabel = strip(vvalue(&strata));
+  run;
+  proc sort data = univar_r;
+    by varstr;
+  run;
+  proc transpose data = univar_r out = ancova_lsm_cnt(drop = _name_);
+    by varstr;
+    id col_id;
+    idlabel col_idlabel;
+    var result;
+  run;
+
+  /*ANCOVA pairwise difference*/
+  data difftot;
+  	set cache_diff;
+  	length avisit $200;
+**  	if avisitn = &avisitn and _avisitn = &avisitn;
+**  	avisit = strip(put(avisitn, avisit.));
+		ord = 1;
+  	stat = strip(put(estimate, &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
+	  if probt < .001 then pval = "<0.001";
+	  else if probt > 0.999 then pval = ">0.999";
+	  else pval = strip(put(probt, &pformat));
+	  ci = '(' || strip(put(lower, &ciformat)) || ', ' || strip(put(upper, &ciformat)) || ')';
+
+		
+		col_id = cats('rpt_col', %if &pwdisp = b %then _&strata; %else &strata;);
+		col_idlabel = strip(vvalue(%if &pwdisp = b %then _&strata; %else &strata;));
+
+	  /*create reverse estimate*/
+		output;
+			/*swap comparing treatment arm*/
+		  &strata.d = &strata;
+			_&strata.d = _&strata;
+			&strata = _&strata.d;
+			_&strata = &strata.d;
+			
+			/*est = -est; lower = -upper; upper = -lower*/
+	  	stat = strip(put(estimate*(-1), &mformat)) ||' (' || strip(put(stderr, &sformat)) || ')';
+		  if probt < .001 then pval = "<0.001";
+	  	else if probt > 0.999 then pval = ">0.999";
+		  else pval = strip(put(probt, &pformat));
+		  ci = '(' || strip(put(upper*(-1), &ciformat)) || ', ' || strip(put(lower*(-1), &ciformat)) || ')';
+		  
+		  col_id = cats('rpt_col', %if &pwdisp = b %then _&strata; %else &strata;);
+			col_idlabel = strip(vvalue(%if &pwdisp = b %then _&strata; %else &strata;));
+		  output;
+	run;
+
+  %let npairlst = %sysfunc(countw(%quote(&difflst), %str( )));
+	data diff1;
+		set difftot;
+	  %do i = 1 %to &npairlst;
+	  	%let dfpair = %scan(%quote(&difflst), &i, %str( ));
+	    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
+	    %let bsl = %sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair));	
+	    if &strata = &alt and _&strata. = &bsl then output;
+		%end;
+  run;
+	proc sort data = diff1;
+    by ord;
+  run;
+  proc transpose data = diff1 out = ancova_dif_est(drop = _name_);
+    by ord;
+    id col_id;
+    idlabel col_idlabel;
+    var stat;
+  run;
+  proc transpose data = diff1 out = ancova_dif_ci(drop = _name_);
+    by ord;
+    id col_id;
+    idlabel col_idlabel;
+    var ci;
+  run;
+  proc transpose data = diff1 out = ancova_dif_pv(drop = _name_);
+    by ord;
+    id col_id;
+    idlabel col_idlabel;
+    var pval;
+  run;
+  
+  %if "&difflst2" NE "" %then %do;
+		  %let npairlst2 = %sysfunc(countw(%quote(&difflst2), %str( )));
+			data diff2;
+				set difftot;
+			  %do i = 1 %to &npairlst2;
+			  	%let dfpair = %scan(%quote(&difflst2), &i, %str( ));
+			    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
+			    %let bsl = %sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair));	
+			    if &strata = &alt and _&strata. = &bsl then output;
+				%end;
+		  run;
+			proc sort data = diff2;
+		    by ord;
+		  run;
+		  proc transpose data = diff2 out = ancova_dif_est2(drop = _name_);
+		    by ord;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var stat;
+		  run;
+		  proc transpose data = diff2 out = ancova_dif_ci2(drop = _name_);
+		    by ord;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var ci;
+		  run;
+		  proc transpose data = diff2 out = ancova_dif_pv2(drop = _name_);
+		    by ord;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var pval;
+		  run;
+		  data lbl2;
+		  	length varstr $250;
+		  	varstr = "&difflbl2";
+		  run; 	
+  %end;
+  
+  %if "&difflst3" NE "" %then %do;
+		  %let npairlst3 = %sysfunc(countw(%quote(&difflst3), %str( )));
+			data diff3;
+				set difftot;
+			  %do i = 1 %to &npairlst3;
+			  	%let dfpair = %scan(%quote(&difflst3), &i, %str( ));
+			    %let alt = %sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair));
+			    %let bsl = %sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair));	
+			    if &strata = &alt and _&strata. = &bsl then output;
+				%end;
+		  run;
+			proc sort data = diff3;
+		    by ord;
+		  run;
+		  proc transpose data = diff3 out = ancova_dif_est3(drop = _name_);
+		    by ord;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var stat;
+		  run;
+		  proc transpose data = diff3 out = ancova_dif_ci3(drop = _name_);
+		    by ord;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var ci;
+		  run;
+		  proc transpose data = diff3 out = ancova_dif_pv3(drop = _name_);
+		    by ord;
+		    id col_id;
+		    idlabel col_idlabel;
+		    var pval;
+		  run;  	
+		  data lbl3;
+		  	length varstr $250;
+		  	varstr = "&difflbl3";
+		  run; 	
+  %end; 
+  
+  /*Combing all into output dataset*/
+  data lblm;
+  	length varstr $250;
+  	varstr = "&modellbl";
+  run;
+  data lbl1;
+  	length varstr $250;
+  	varstr = "&difflbl";
+  run;  
+  data ancova_lsm;
+  	retain varstr rpt_col:;
+  	set lblm 
+  			ancova_lsm_est (in=a) ancova_lsm_ci (in=b) 
+  			%if &lsmcnt ^= 0 %then ancova_lsm_cnt (in=c);
+  			lbl1
+  			ancova_dif_est (in=d) ancova_dif_ci (in=e) ancova_dif_pv (in=f)
+  			%if "&difflst2" NE "" %then %do;
+  			lbl2
+  			ancova_dif_est2 (in=d2) ancova_dif_ci2 (in=e2) ancova_dif_pv2 (in=f2)  				
+  			%end;
+  			%if "&difflst3" NE "" %then %do;
+  			lbl3
+  			ancova_dif_est3 (in=d3) ancova_dif_ci3 (in=e3) ancova_dif_pv3 (in=f3)  				
+  			%end;
+  			;
+  	length varstr $250;
+  	if a then varstr = "Least Square Mean (SE)";
+  	if b or e or e2 or e3 then varstr = "95% CI";
+  	if d or d2 or d3 then varstr = "Difference (SE)";
+  	if f or f2 or f3 then varstr = "p-value";
+  	keep varstr rpt_col:;
+  run;
+
+  %rptpush(ancova_lsm);
+  
+%mend;
+
+%macro propdif(
+  indata,           /* Input dataset */
+  var,							/* Variable to be analyzed */
+  strata,           /* Main group */
+  difflst = ,				/* Pairs of comparison, e.g. 1|2 3|5*/
+  difflbl = ,				/* Pairwise comparison label*/
+  difflst2 = ,			/* 2nd row of comparison*/
+ 	difflbl2 = ,			/* 2nd row of comparison label*/
+  difflst3 = ,			/* 3rd row of comparison*/
+ 	difflbl3 = ,			/* 3rd row of comparison label*/
+ 	fisher = 0,				/* use fisher exact test for cell counts < 5*/
+ 	fisherp = , 			/* comparison pairs which Fisher's test is needed*/
+ 	pwdisp = a,				/* Display pairwise comparison in baseline (b) or 
+  										 alternative (a) column*/
+  lsmcnt = 0,				/* if to display LSM model count */
+  mformat = 8.1,    /* Format of the least square means */
+  sformat = 8.2,		/* Format of the SE*/
+  ciformat = 8.1,		/* Format of the CI*/
+  pformat = 8.3			/* Format of the p-value*/
+  );
+
+  %* Precheck the STRATA variable;
+  %if &rpt_sttvar = %then %do;
+    %let rpt_sttvar = &strata;
+    %let dsid = %sysfunc(open(&indata, i));
+    %let sttnum = %sysfunc(varnum(&dsid, &rpt_sttvar));
+    %let rpt_sttlbl = %qsysfunc(varlabel(&dsid, &sttnum));
+    %let rc = %sysfunc(close(&dsid));
+  %end;
+  %else %if &rpt_sttvar ne &strata %then %do;
+    %put ERROR: Changed main group variable;
+    %abort;
+  %end;
+
+	/*First row of difference comparison*/
+  %let npairlst = %sysfunc(countw(%quote(&difflst), %str( )));
+  %do i = 1 %to &npairlst;
+  	%let dfpair = %scan(%quote(&difflst), &i, %str( ));
+    %let alt = %eval(%sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair)));
+    %let bsl = %eval(%sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair)));	
+
+		ods listing close;
+		proc freq data=&indata;
+			where trtgp in (&bsl, &alt);
+			%if &fisher = 1 %then %do;
+				ods output crosstabfreqs=cache_ctf_&i;
+				ods output fishersexact=cache_fisher_&i;
+			%end;
+			ods output chisq=cache_csp_&i;
+			ods output riskdiffcol1=cache_diff_&i;
+			
+			%if &fisher = 1 %then %do;
+			  table &strata * &var / riskdiff(column=2 cl=exact) out = freqtab_&i;
+				exact riskdiff fisher;
+			%end;
+			%else %do;
+				table &strata * &var / riskdiff fisher;
+			%end;
+		run;
+
+		data cache_diff_&i;
+			set cache_diff_&i;
+			col_id = cats('rpt_col', %if &pwdisp = b %then &bsl; %else &alt;);
+		run;
+		data cache_csp_&i;
+			set cache_csp_&i;
+			col_id = cats('rpt_col', %if &pwdisp = b %then &bsl; %else &alt;);
+		run;
+		%if &fisher = 1 %then %do;
+			data cache_fisher_&i;
+				set cache_fisher_&i;
+				col_id = cats('rpt_col', %if &pwdisp = b %then &bsl; %else &alt;);
+				statistic = name1;
+				prob = nvalue1;
+			run;
+		%end;
+		
+		/*2022-03-03 HW: merge minimum count to 95% CI results to decide Fisher's exact test*/		
+		%if &fisher = 1 %then %do;
+				proc sql; 
+				create table cache_diffe_&i as 
+				select a.*, b.mincount
+				from cache_diff_&i as a left join 
+				(select min(count) as mincount, "Difference" as row from freqtab_&i (where=(&var = 1))) as b
+				on a.row = b.row;
+				quit;
+		%end;
+		ods listing;
+	%end;
+	
+	data cache_diff1;
+		%if &fisher = 1 %then	set cache_diffe_:;
+		%else set cache_diff_:;;
+		where row = "Difference";
+		ord = 1;
+	  stat = strip(put(risk*100, &mformat)) ||' (' || strip(put(ase*100, &sformat)) || ')';
+	  if 0 < mincount < 5 then ci = '(' || strip(put(exactlowercl*100, &ciformat)) || ', ' || strip(put(exactuppercl*100, &ciformat)) || ')';
+	  else ci = '(' || strip(put(lowercl*100, &ciformat)) || ', ' || strip(put(uppercl*100, &ciformat)) || ')';
+	run;
+
+	proc sort data = cache_diff1;
+    by ord;
+  run;
+  proc transpose data = cache_diff1 out = prop_est1(drop = _name_);
+    by ord;
+    id col_id;
+    var stat;
+  run;
+  proc transpose data = cache_diff1 out = prop_ci1(drop = _name_);
+    by ord;
+    id col_id;
+    var ci;
+  run;
+  
+  %if &fisher = 1 %then %do;
+	data cache_csp1;
+		set cache_csp_: cache_fisher_:;
+		where statistic = "Chi-Square" or statistic = "XP2_FISH";
+		if (col_id = "rpt_col&fisherp" and statistic = "XP2_FISH")
+				or
+			 (col_id ^= "rpt_col&fisherp" and statistic = "Chi-Square");
+
+		ord = 1;
+		if prob < .001 then pval = "<0.001";
+	  else if prob > 0.999 then pval = ">0.999";
+	  else pval = strip(put(prob, &pformat));
+	run;
+	%end;
+	%else %do;
+		data cache_csp1;
+		set cache_csp_:;
+			where statistic = "Chi-Square";
+			ord = 1;
+			if prob < .001 then pval = "<0.001";
+		  else if prob > 0.999 then pval = ">0.999";
+		  else pval = strip(put(prob, &pformat));
+		run;
+	%end;
+	
+  proc transpose data = cache_csp1 out = prop_pv1(drop = _name_);
+    by ord;
+    id col_id;
+    var pval;
+  run;		
+	
+	/*Second row of difference comparison*/
+  %let npairlst2 = %sysfunc(countw(%quote(&difflst2), %str( )));
+  %do i = 1 %to &npairlst2;
+  	%let dfpair = %scan(%quote(&difflst2), &i, %str( ));
+    %let alt = %eval(%sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair)));
+    %let bsl = %eval(%sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair)));	
+
+		ods listing close;
+		proc freq data=&indata;
+			where trtgp in (&bsl, &alt);
+			%if &fisher = 1 %then %do;
+				ods output crosstabfreqs=cache_ctf_&i;
+				ods output fishersexact=cache_fisher_&i;
+			%end;
+			ods output chisq=cache_csp2_&i;
+			ods output riskdiffcol2=cache_diff2_&i;
+			
+			%if &fisher = 1 %then %do;
+			  table &strata * &var / riskdiff(column=2 cl=exact);
+				exact riskdiff fisher;
+			%end;
+			%else %do;
+				table &strata * &var / riskdiff fisher;
+			%end;
+		run;
+		
+		data cache_diff2_&i;
+			set cache_diff2_&i;
+			col_id = cats('rpt_col', %if &pwdisp = b %then &bsl; %else &alt;);		
+		run;
+		data cache_csp2_&i;
+			set cache_csp2_&i;
+			col_id = cats('rpt_col', %if &pwdisp = b %then &bsl; %else &alt;);			
+		run;
+		ods listing;
+	%end;
+	
+	data cache_diff2;
+		set cache_diff2_:;
+		where row = "Difference";
+		ord = 1;
+	  stat = strip(put(risk*100, &mformat)) ||' (' || strip(put(ase*100, &sformat)) || ')';
+	  ci = '(' || strip(put(lowercl*100, &ciformat)) || ', ' || strip(put(uppercl*100, &ciformat)) || ')';
+	run;
+	
+	proc sort data = cache_diff2;
+    by ord;
+  run;
+  proc transpose data = cache_diff2 out = prop_est2(drop = _name_);
+    by ord;
+    id col_id;
+    var stat;
+  run;
+  proc transpose data = cache_diff2 out = prop_ci2(drop = _name_);
+    by ord;
+    id col_id;
+    var ci;
+  run;		
+	data cache_csp2;
+		set cache_csp2_:;
+		where statistic = "Chi-Square";
+		ord = 1;
+		if prob < .001 then pval = "<0.001";
+	  else if prob > 0.999 then pval = ">0.999";
+	  else pval = strip(put(prob, &pformat));
+	run;
+  proc transpose data = cache_csp2 out = prop_pv2(drop = _name_);
+    by ord;
+    id col_id;
+    var pval;
+  run;		
+
+	/*Third row of difference comparison*/
+  %let npairlst3 = %sysfunc(countw(%quote(&difflst3), %str( )));
+  %do i = 1 %to &npairlst3;
+  	%let dfpair = %scan(%quote(&difflst3), &i, %str( ));
+    %let alt = %eval(%sysfunc(prxchange(%str(s/(\d+)\|\d+/$1/), 1, &dfpair)));
+    %let bsl = %eval(%sysfunc(prxchange(%str(s/\d+\|(\d+)/$1/), 1, &dfpair)));	
+
+		ods listing close;
+		proc freq data=&indata;
+			where trtgp in (&bsl, &alt);
+			%if &fisher = 1 %then %do;
+				ods output crosstabfreqs=cache_ctf_&i;
+				ods output fishersexact=cache_fisher_&i;
+			%end;
+			ods output chisq=cache_csp3_&i;
+			ods output riskdiffcol2=cache_diff3_&i;
+			
+			%if &fisher = 1 %then %do;
+			  table &strata * &var / riskdiff(column=2 cl=exact);
+				exact riskdiff fisher;
+			%end;
+			%else %do;
+				table &strata * &var / riskdiff fisher;
+			%end;
+		run;
+		
+		data cache_diff3_&i;
+			set cache_diff3_&i;
+			col_id = cats('rpt_col', %if &pwdisp = b %then &bsl; %else &alt;);		
+		run;
+		data cache_csp3_&i;
+			set cache_csp3_&i;
+			col_id = cats('rpt_col', %if &pwdisp = b %then &bsl; %else &alt;);			
+		run;
+		ods listing;
+	%end;
+	
+	data cache_diff3;
+		set cache_diff3_:;
+		where row = "Difference";
+		ord = 1;
+	  stat = strip(put(risk*100, &mformat)) ||' (' || strip(put(ase*100, &sformat)) || ')';
+	  ci = '(' || strip(put(lowercl*100, &ciformat)) || ', ' || strip(put(uppercl*100, &ciformat)) || ')';
+	run;
+	
+	proc sort data = cache_diff3;
+    by ord;
+  run;
+  proc transpose data = cache_diff3 out = prop_est3(drop = _name_);
+    by ord;
+    id col_id;
+    var stat;
+  run;
+  proc transpose data = cache_diff3 out = prop_ci3(drop = _name_);
+    by ord;
+    id col_id;
+    var ci;
+  run;		
+	data cache_csp3;
+		set cache_csp3_:;
+		where statistic = "Chi-Square";
+		ord = 1;
+		if prob < .001 then pval = "<0.001";
+	  else if prob > 0.999 then pval = ">0.999";
+	  else pval = strip(put(prob, &pformat));
+	run;
+  proc transpose data = cache_csp3 out = prop_pv3(drop = _name_);
+    by ord;
+    id col_id;
+    var pval;
+  run;		
+
+  /*Combing all into output dataset*/
+  data lbl1;
+  	length varstr $250;
+  	varstr = "&difflbl";
+  run;
+  data lbl2;
+  	length varstr $250;
+  	varstr = "&difflbl2";
+  run;
+  data lbl3;
+	length varstr $250;
+	varstr = "&difflbl3";
+	run;
+  data propdif_all;
+  	retain varstr rpt_col:;
+  	set lbl1
+  			prop_est1 (in=d1) prop_ci1 (in=e1) prop_pv1 (in=f1)
+  			lbl2
+  			prop_est2 (in=d2) prop_ci2 (in=e2) prop_pv2 (in=f2)
+  			lbl3
+  			prop_est3 (in=d3) prop_ci3 (in=e3) prop_pv3 (in=f3)
+  			;
+  	length varstr $250;
+  	if d1 or d2 or d3 then varstr = "Difference (SE)";
+  	if e1 or e2 or e3 then varstr = "95% CI";
+  	if f1 or f2 or f3 then varstr = "p-value";
+  	keep varstr rpt_col:;
+  run;
+
+  %rptpush(propdif_all);
   
 %mend;
 
