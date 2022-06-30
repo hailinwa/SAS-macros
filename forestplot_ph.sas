@@ -1,4 +1,4 @@
-/* Macro for generating forest plot comparing main effect conditioned on INTERACTION variables
+/* Macro for generating forest plot for Cox model
 /* Author: Hai-Lin Wang <hwang@mcw.edu>
 /* Created: 2019-10-08
 /*
